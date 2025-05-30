@@ -58,11 +58,11 @@
 
 ## 🧠 Installation
 
-1. Install [TI-Nspire Computer Link Software](https://education.ti.com/en/products/computer-software/ti-nspire-cx-student-software).
+1. Install [TI-Nspire Computer Link Software](https://education.ti.com/en/software/details/en/36BE84F974E940C78502AA47492887AB/ti-nspirecxcas_pc_full).
 2. Transfer the `nLuaCAS.tns` file to your TI-Nspire calculator.
 3. Launch the app from My Documents.
 
-> 💡 Alternatively, users can try the open-source [nLink PC Tool](https://github.com/nRookie/nLink) for transferring `.tns` files, though it is unofficial and not affiliated with TI. Use responsibly and at your discretion.
+> 💡 Alternatively, users can try the open-source [nLink PC Tool](https://lights0123.com/n-link/) for transferring `.tns` files, though it is unofficial and not affiliated with TI. Use responsibly and at your discretion.
 
 ---
 
