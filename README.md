@@ -66,7 +66,8 @@
 
 ## 💡 Notes
 
-- Best used on **TI-Nspire CX II**, but compatible with **CX I** (with slight UI limitations).
+- Tested on **TI-Nspire CX II**, works across **CX** and **CX II** models.
+- Does **not** require Ndless or OS modification.
 - No internet access or OS modification required.
 - Runs fully offline.
 
