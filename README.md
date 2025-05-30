@@ -93,14 +93,6 @@ This project is not designed to give unfair advantages — it is an educational 
 
 ---
 
-## ✅ For Portfolio & Educational Showcase
-
-This project demonstrates technical skill in symbolic math parsing, UI design, and embedded development using Lua. It is a learning project and a contribution to open education.
-
-Feel free to explore the code or adapt it for your own educational experiments. 
-
----
-
 ## 🧑‍💻 Credits
 
 Made with ❤️ by [@DeltaDev]
