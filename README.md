@@ -62,6 +62,8 @@
 2. Transfer the `nLuaCAS.tns` file to your TI-Nspire calculator.
 3. Launch the app from My Documents.
 
+> 💡 Alternatively, users can try the open-source [nLink PC Tool](https://github.com/nRookie/nLink) for transferring `.tns` files, though it is unofficial and not affiliated with TI. Use responsibly and at your discretion.
+
 ---
 
 ## 💡 Notes
