@@ -11,9 +11,7 @@
 - **Simplification** — Combine like terms, expand binomials, reduce expressions.
 - **Equation Solving** — Solve linear, quadratic, and some cubic equations symbolically.
 - **Function Memory** — Define and reuse functions (e.g., `let f(x) = x^2 + 1`).
-- **Pretty Output** — Clean rendering of fractions, exponents, and symbols.
 - **History + Help** — Tabs for prior computations and examples.
-- **Dark Mode** — Customizable appearance with persistent mode memory.
 - **No Ndless Required** — Fully compatible with TI-Nspire CX II and CX.
 
 ## 🖥 How to Use
@@ -41,18 +39,35 @@ Use `TAB` to switch views: Main ↔ History ↔ About ↔ Help.
 - ❌ Not for monochrome models
 - ❌ Does not require Ndless or OS modification
 
-## 🔐 Legal & Usage
+---
 
-This is a **community-made** educational tool and is **not affiliated with or endorsed by Texas Instruments**. All functionality is implemented via the official Lua scripting API provided by TI.
+## 🔐 Legal & License
 
-- You are responsible for how and where this tool is used.
-- Do not use in exam settings unless explicitly allowed.
-- No TI firmware, OS files, or proprietary assets are included.
+This is a **community-made** educational tool and is **not affiliated with or endorsed by Texas Instruments**.
 
-## 📦 License
+### License & Attribution
 
-MIT License
+- **CAS engine (core logic)**:  
+  © 2024 DeltaDev, released under the MIT License.
+- **User interface & UI layout**:  
+  Derived from **SuperSpire (S²)** by Xavier Andréani (https://tipla.net/a29172),  
+  used under Creative Commons Attribution-ShareAlike 2.0 (CC BY-SA 2.0 FR).  
+  UI modifications and integration by DeltaDev.
+
+If you reuse/adapt the UI code, you must preserve the same attribution and license terms.
+
+**No TI firmware, OS files, or proprietary assets are included.**
+
+---
 
 ## 🙏 Credits
 
-Built by [@DeltaDev] with help from the open calculator dev community ❤️
+- **CAS engine, integration, & documentation:**  
+  [@DeltaDev](https://github.com/yourusername)
+- **Original UI framework:**  
+  SuperSpire (S²) by Xavier Andréani — [tipla.net/a29172](https://tipla.net/a29172)
+- Thanks to the open calculator development community ❤️
+
+---
+
+*This is a derivative work of SuperSpire (S²), with substantial original code for the symbolic engine by DeltaDev.*

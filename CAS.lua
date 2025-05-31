@@ -1,36 +1,21 @@
--- Basic CAS GUI for TI-Nspire (Lua)
-local input = ""
-local output = ""
-local editing = true
-local history = {}
-local view = "main" -- can be "main", "history", "about", "help"
 
-local unpack = table.unpack or unpack
-local darkMode = false
 
--- Soft persistence for history and theme (if available)
-local store = platform and platform.store
-if store then
-  local ok1, h = pcall(function() return store.get("cas_history") end)
-  if ok1 and h then history = h end
-  local ok2, d = pcall(function() return store.get("cas_darkMode") end)
-  if ok2 and d ~= nil then darkMode = d end
-end
-local palette_light = {
-  header = {34,40,49}, bg = {236,240,241}, faded = {230,230,230},
-  inputBG = {240,244,255}, inputBorder = {60,120,200},
-  outBG = {252,252,255}, outBorder = {80,180,120},
-  text = {0,0,0}
-}
-local palette_dark = {
-  header = {50,60,80}, bg = {18,18,24}, faded = {85,85,90},
-  inputBG = {36,40,45}, inputBorder = {90,120,220},
-  outBG = {38,43,47}, outBorder = {39,174,96},
-  text = {220,220,220}
-}
 
--- Forward declarations for parser functions
-local parseExpr, parseTermChain, parseTerm, parseFactor
+
+-- Additional CAS commands:
+-- expand(expr)
+-- subs(expr, var, val)
+-- factor(expr)
+-- gcd(a, b)
+-- lcm(a, b)
+-- trigid(expr)
+
+platform.apilevel = "2.4"
+
+-- Global error flag for LuaCAS engine status
+_G.luaCASerror = false
+
+-- CAS core routines
 
 -- Tokenize a mathematical expression into components
 function tokenize(expr)
@@ -71,20 +56,18 @@ function tokenize(expr)
   end
 
   -- Insert * for implicit multiplication
-  local i = 2
-  while i <= #tokens do
-    if (tokens[i-1]:match("[%d%a%)%]]") and tokens[i]:match("[%a%(]")) then
-      table.insert(tokens, i, "*")
-      i = i + 1
+  local j = 2
+  while j <= #tokens do
+    if tokens[j-1]:match("[%d%a%)%]]") and tokens[j]:match("[%a%(]") then
+      table.insert(tokens, j, "*")
+      j = j + 1
     end
-    i = i + 1
+    j = j + 1
   end
   return tokens
 end
 
-
--- Helper parsing functions for AST construction
-
+-- Parsing helpers
 local function parseTerm(tokens, index)
   local token = tokens[index]
   if token == nil then
@@ -144,7 +127,6 @@ function parseExpr(tokens, index)
   return node, nextIndex
 end
 
--- Very basic parser: Converts a flat list into a left-associative binary tree
 function buildAST(tokens)
   local ast, nextIndex = parseExpr(tokens, 1)
   if nextIndex <= #tokens then
@@ -153,8 +135,6 @@ function buildAST(tokens)
   return ast
 end
 
-
--- AST-to-string for display (minimized string allocations)
 function astToString(ast)
   if not ast then return "?" end
   local t = ast.type
@@ -164,11 +144,9 @@ function astToString(ast)
     return ast.name .. "(" .. astToString(ast.args[1]) .. ")"
   end
   if t == "power" then
-    -- Parenthesize if needed for clarity
     return "("..astToString(ast.left)..")^("..astToString(ast.right)..")"
   end
   if t == "mul" then
-    -- Omit * for number*variable, e.g. 2x
     if ast.left.type == "number" and ast.right.type == "variable" then
       if ast.left.value == 1 then return astToString(ast.right) end
       if ast.left.value == 0 then return "0" end
@@ -193,7 +171,6 @@ function astToString(ast)
   return "?"
 end
 
--- Recursively simplify AST: combine constants, expand products/powers, collapse terms
 function simplifyAST(ast)
   if not ast then return nil end
   local t = ast.type
@@ -203,7 +180,6 @@ function simplifyAST(ast)
   if t == "number" or t == "variable" then
     return ast
   end
-  -- Generic like-term combining for terms like ax^n + bx^n
   local function extractCoeffVarPow(node)
     if node.type == "variable" then
       return 1, node.name, 1
@@ -216,25 +192,20 @@ function simplifyAST(ast)
       and node.right.left.type == "variable"
       and node.right.right.type == "number" then
       return node.left.value, node.right.left.name, node.right.right.value
-    -- Additional checks for combinations like x*x, x*x^2, x^2*x, x^2*x^3, x*x*x
     elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "variable" and node.left.name == node.right.name then
-      -- x*x => x^2
       return 1, node.left.name, 2
     elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "power"
       and node.right.left.type == "variable" and node.right.right.type == "number"
       and node.left.name == node.right.left.name then
-      -- x*x^n => x^(n+1)
       return 1, node.left.name, node.right.right.value + 1
     elseif node.type == "mul" and node.left.type == "power" and node.right.type == "variable"
       and node.left.left.type == "variable" and node.left.right.type == "number"
       and node.left.left.name == node.right.name then
-      -- x^n*x => x^(n+1)
       return 1, node.right.name, node.left.right.value + 1
     elseif node.type == "mul" and node.left.type == "power" and node.right.type == "power"
       and node.left.left.type == "variable" and node.left.right.type == "number"
       and node.right.left.type == "variable" and node.right.right.type == "number"
       and node.left.left.name == node.right.left.name then
-      -- x^n * x^m => x^(n+m)
       return 1, node.left.left.name, node.left.right.value + node.right.right.value
     end
     return nil
@@ -261,14 +232,11 @@ function simplifyAST(ast)
   if t == "add" or t == "sub" then
     local left = simplifyAST(ast.left)
     local right = simplifyAST(ast.right)
-    -- Combine numeric
     if left.type == "number" and right.type == "number" then
       return {type="number", value=(t=="add" and left.value+right.value or left.value-right.value)}
     end
-    -- Generic like-term combining
     local combined = combineLikeTerms(left, right, t)
     if combined then return combined end
-    -- 0 + x = x, x + 0 = x
     if left.type == "number" and left.value == 0 then return right end
     if right.type == "number" and right.value == 0 then return left end
     return {type=t, left=left, right=right}
@@ -276,18 +244,14 @@ function simplifyAST(ast)
   if t == "mul" then
     local left = simplifyAST(ast.left)
     local right = simplifyAST(ast.right)
-    -- Constant folding
     if left.type == "number" and right.type == "number" then
       return {type="number", value=left.value * right.value}
     end
-    -- 0*x or x*0 => 0
     if (left.type == "number" and left.value == 0) or (right.type == "number" and right.value == 0) then
       return {type="number", value=0}
     end
-    -- 1*x or x*1 => x
     if left.type == "number" and left.value == 1 then return right end
     if right.type == "number" and right.value == 1 then return left end
-    -- Expand (a+b)*c => a*c + b*c
     if left.type == "add" then
       return simplifyAST({type="add",
         left={type="mul", left=left.left, right=right},
@@ -298,7 +262,6 @@ function simplifyAST(ast)
         left={type="mul", left=left, right=right.left},
         right={type="mul", left=left, right=right.right}})
     end
-    -- Expand (a-b)*c and a*(b-c)
     if left.type == "sub" then
       return simplifyAST({type="sub",
         left={type="mul", left=left.left, right=right},
@@ -317,7 +280,6 @@ function simplifyAST(ast)
     if left.type == "number" and right.type == "number" then
       return {type="number", value=left.value / right.value}
     end
-    -- x/1 = x
     if right.type == "number" and right.value == 1 then return left end
     return {type="div", left=left, right=right}
   end
@@ -327,10 +289,8 @@ function simplifyAST(ast)
     if base.type == "number" and exp.type == "number" then
       return {type="number", value=base.value ^ exp.value}
     end
-    -- (x^1) => x, (x^0) => 1
     if exp.type == "number" and exp.value == 1 then return base end
     if exp.type == "number" and exp.value == 0 then return {type="number", value=1} end
-    -- Expand (a+b)^2 => (a+b)*(a+b)
     if exp.type == "number" and exp.value == 2 then
       return simplifyAST({type="mul", left=base, right=base})
     end
@@ -348,12 +308,10 @@ function simplify(expr)
   return simp and astToString(simp) or "Simplify failed"
 end
 
--- Basic equation solver: solve(x^2 - 4 = 0)
 function solve(eqn)
-  eqn = eqn:gsub("%s+", "") -- Remove all whitespace
+  eqn = eqn:gsub("%s+", "")
   local lhs, rhs = eqn:match("(.+)%=(.+)")
   if not lhs or not rhs then
-    -- Try auto-convert to "=0" if not present
     if not eqn:find("=") then
       lhs = eqn
       rhs = "0"
@@ -453,12 +411,9 @@ function define(expr)
 end
 
 function evalFunction(expr)
-  -- Try variable lookup
   if memory[expr] then
     return simplify(memory[expr])
   end
-
-  -- Try function call
   for k,v in pairs(memory) do
     local name, arg = k:match("(%w+)%((%w+)%)")
     local callarg = expr:match(name .. "%(([%d%.%-]+)%)")
@@ -470,7 +425,6 @@ function evalFunction(expr)
   return "Unknown variable or function"
 end
 
--- Support definite integrals: int(expr, a, b)
 function definiteInt(expr)
   local e,a,b = expr:match("([^,]+),%s*([^,]+),%s*([^%)]+)")
   if e and a and b then
@@ -483,9 +437,7 @@ function definiteInt(expr)
 end
 
 function derivative(expr)
-  expr = expr:gsub("%s+", "") -- remove whitespace
-
-  -- Multivariable partial derivatives
+  expr = expr:gsub("%s+", "")
   if expr:match("^∂/∂[yz]%(") then
     local var = expr:sub(4, 4)
     local subexpr = expr:match("∂/∂"..var.."%((.+)%)")
@@ -495,117 +447,181 @@ function derivative(expr)
       return "Invalid partial"
     end
   end
-
-  -- Constant
   if expr:match("^%d+$") then return "0" end
   if expr == "x" then return "1" end
-
-  -- Trigonometric functions
   if expr == "sin(x)" then return "cos(x)" end
   if expr == "cos(x)" then return "-sin(x)" end
   if expr == "tan(x)" then return "sec(x)^2" end
   if expr == "sec(x)" then return "sec(x)tan(x)" end
   if expr == "csc(x)" then return "-csc(x)cot(x)" end
   if expr == "cot(x)" then return "-csc(x)^2" end
-
-  -- Exponential
   if expr == "e^x" then return "e^x" end
   local a = expr:match("^(%d+)%^x$")
   if a then return expr .. "*ln(" .. a .. ")" end
-
-  -- Logarithmic
   if expr == "ln(x)" then return "1/x" end
-
-  -- Chain rule: (ax+b)^n
+  -- Additional function derivatives
+  if expr == "exp(x)" then return "exp(x)" end
+  if expr == "log(x)" then return "1/x" end
+  if expr == "sqrt(x)" then return "1/(2*sqrt(x))" end
+  if expr == "abs(x)" then return "x/abs(x)" end
+  if expr == "asin(x)" then return "1/sqrt(1-x^2)" end
+  if expr == "acos(x)" then return "-1/sqrt(1-x^2)" end
+  if expr == "atan(x)" then return "1/(1+x^2)" end
   local inner, offset, exponent = expr:match("^%((%-?%d*%.?%d*)x([%+%-]%d+)%)%^([%d%.]+)$")
   if inner and exponent then
-    local a = tonumber(inner) ~= 0 and tonumber(inner) or 1
+    local acoef = tonumber(inner) ~= 0 and tonumber(inner) or 1
     local n = tonumber(exponent)
     local new_exp = n - 1
     local outer = tostring(n) .. "(" .. inner .. "x" .. offset .. ")^" .. new_exp
-    return outer .. "*" .. tostring(a)
+    return outer .. "*" .. tostring(acoef)
   end
-
-  -- Power rule
-  local base, exponent = expr:match("^(x)%^([%d%.]+)$")
-  if base and exponent then
-    local new_exp = tonumber(exponent) - 1
-    return exponent .. "x^" .. new_exp
+  -- x^n
+  local base, exponent2 = expr:match("^(x)%^([%d%.]+)$")
+  if base and exponent2 then
+    local new_exp2 = tonumber(exponent2) - 1
+    if new_exp2 == 1 then
+      return exponent2 .. "x"
+    elseif new_exp2 == 0 then
+      return exponent2
+    else
+      return exponent2 .. "x^" .. new_exp2
+    end
   end
-
-  -- Constant * x^n
+  -- x^(n)
+  local baseP, exponentP = expr:match("^(x)%^%(([%d%.%-]+)%)$")
+  if baseP and exponentP then
+    local new_expP = tonumber(exponentP) - 1
+    if new_expP == 1 then
+      return exponentP .. "x"
+    elseif new_expP == 0 then
+      return exponentP
+    else
+      return exponentP .. "x^" .. new_expP
+    end
+  end
+  -- a*x^n
   local coeff, power = expr:match("^(%-?%d*%.?%d*)x%^([%d%.]+)$")
   if coeff and power then
     if coeff == "" then coeff = "1" end
     local new_coeff = tonumber(coeff) * tonumber(power)
-    local new_exp = tonumber(power) - 1
-    return tostring(new_coeff) .. "x^" .. tostring(new_exp)
+    local new_exp2 = tonumber(power) - 1
+    if new_exp2 == 1 then
+      return tostring(new_coeff) .. "x"
+    elseif new_exp2 == 0 then
+      return tostring(new_coeff)
+    else
+      return tostring(new_coeff) .. "x^" .. tostring(new_exp2)
+    end
   end
-
-  -- Constant * x
-  coeff = expr:match("^(%-?%d*%.?%d*)x$")
-  if coeff then
-    if coeff == "" then coeff = "1" end
-    return tostring(tonumber(coeff))
+  -- a*x^(n)
+  local coeffP, powerP = expr:match("^(%-?%d*%.?%d*)x%^%(([%d%.%-]+)%)$")
+  if coeffP and powerP then
+    if coeffP == "" then coeffP = "1" end
+    local new_coeffP = tonumber(coeffP) * tonumber(powerP)
+    local new_expP = tonumber(powerP) - 1
+    if new_expP == 1 then
+      return tostring(new_coeffP) .. "x"
+    elseif new_expP == 0 then
+      return tostring(new_coeffP)
+    else
+      return tostring(new_coeffP) .. "x^" .. tostring(new_expP)
+    end
   end
-
-  -- Product rule: f(x)*g(x)
+  -- a*x
+  local coeff2 = expr:match("^(%-?%d*%.?%d*)x$")
+  if coeff2 then
+    if coeff2 == "" then coeff2 = "1" end
+    return tostring(coeff2)
+  end
+  -- sums: split at '+' outside parentheses
+  local function split_terms(expr, op)
+    local terms = {}
+    local level, last = 0, 1
+    for i = 1, #expr do
+      local c = expr:sub(i,i)
+      if c == "(" then level = level + 1 end
+      if c == ")" then level = level - 1 end
+      if c == op and level == 0 then
+        table.insert(terms, expr:sub(last, i-1))
+        last = i+1
+      end
+    end
+    if last <= #expr then
+      table.insert(terms, expr:sub(last))
+    end
+    return terms
+  end
+  -- sums
+  if expr:find("%+") then
+    local terms = split_terms(expr, "+")
+    local out = {}
+    for i, term in ipairs(terms) do
+      table.insert(out, derivative(term))
+    end
+    return table.concat(out, " + ")
+  end
+  -- differences
+  if expr:find("%-") then
+    local terms = split_terms(expr, "-")
+    local out = {}
+    for i, term in ipairs(terms) do
+      if i == 1 then
+        table.insert(out, derivative(term))
+      else
+        table.insert(out, "-("..derivative(term)..")")
+      end
+    end
+    return table.concat(out, " ")
+  end
+  -- product rule
   local f, g = expr:match("^(.-)%*(.+)$")
   if f and g then
-    return "(" .. derivative(f) .. ")*" .. g .. " + " .. f .. "*(" .. derivative(g) .. ")"
+    return "("..derivative(f)..")*("..g..")+"..f.."*("..derivative(g)..")"
   end
-
-  -- Quotient rule: f(x)/g(x)
+  -- quotient rule
   local num, denom = expr:match("^(.-)/(.-)$")
   if num and denom then
-    return "((" .. derivative(num) .. ")*" .. denom .. " - " .. num .. "*(" .. derivative(denom) .. "))/" .. denom .. "^2"
+    return "(("..derivative(num)..")*("..denom..")-("..num..")*("..derivative(denom).."))/("..denom..")^2"
   end
-
-  -- Sum of terms
-  if expr:find("%+") then
-    local terms = {}
-    for term in expr:gmatch("[^+]+") do
-      table.insert(terms, derivative(term))
-    end
-    return table.concat(terms, " + ")
+  -- Chain rule for f(ax+b)
+  local fname, inner = expr:match("^(%a+)%(([%d%.%-]*x[%+%-]?[%d%.]*)%)$")
+  if fname and inner then
+      local inner_deriv = derivative(inner)
+      if fname == "sin" then
+          return "cos(" .. inner .. ")*(" .. inner_deriv .. ")"
+      elseif fname == "cos" then
+          return "-sin(" .. inner .. ")*(" .. inner_deriv .. ")"
+      elseif fname == "tan" then
+          return "sec(" .. inner .. ")^2*(" .. inner_deriv .. ")"
+      elseif fname == "exp" then
+          return "exp(" .. inner .. ")*(" .. inner_deriv .. ")"
+      elseif fname == "log" then
+          return "1/(" .. inner .. ")*(" .. inner_deriv .. ")"
+      elseif fname == "sqrt" then
+          return "1/(2*sqrt("..inner.."))*("..inner_deriv..")"
+      end
   end
-
-  -- Higher-order derivatives: d²/dx²(expr)
-  local order, var, subexpr = expr:match("^d(%d+)/d([a-zA-Z])%^(%d+)%((.+)%)$")
-  if order and var and subexpr then
+  -- nth order
+  local order, var2, subexpr2 = expr:match("^d(%d+)/d([a-zA-Z])%^(%d+)%((.+)%)$")
+  if order and var2 and subexpr2 then
     order = tonumber(order)
-    local result = subexpr
+    local result = subexpr2
     for i = 1, order do
       result = derivative(result)
     end
     return result
   end
-
-  -- Handle exact form like d²/dx²(...)
   if expr:match("^d²/dx²%(.+%)$") then
-    local subexpr = expr:match("^d²/dx²%((.+)%)$")
-    if subexpr then
-      return derivative(derivative(subexpr))
-    end
+    local se = expr:match("^d²/dx²%((.+)%)$")
+    if se then return derivative(derivative(se)) end
   end
-
-  return "d/dx not supported for: " .. expr
+  return "d/dx not supported for: "..expr
 end
 
 function integrate(expr)
-  expr = expr:gsub("%s+", "") -- remove whitespace
-
-  -- Integrate constants
-  if expr:match("^%d+$") then
-    return expr .. "x + C"
-  end
-
-  -- Integrate x
-  if expr == "x" then
-    return "0.5x^2 + C"
-  end
-
-  -- Trigonometric functions
+  expr = expr:gsub("%s+", "")
+  if expr:match("^%d+$") then return expr .. "x + C" end
+  if expr == "x" then return "0.5x^2 + C" end
   if expr == "sin(x)" then return "-cos(x) + C" end
   if expr == "cos(x)" then return "sin(x) + C" end
   if expr == "tan(x)" then return "-ln|cos(x)| + C" end
@@ -613,384 +629,1619 @@ function integrate(expr)
   if expr == "csc(x)^2" then return "-cot(x) + C" end
   if expr == "sec(x)tan(x)" then return "sec(x) + C" end
   if expr == "csc(x)cot(x)" then return "-csc(x) + C" end
-
-  -- Exponential and log
   if expr == "e^x" then return "e^x + C" end
   if expr == "ln(x)" then return "x*ln(x) - x + C" end
-
-  -- Power rule: x^n -> x^(n+1)/(n+1)
-  local base, exponent = expr:match("^(x)%^([%d%.]+)$")
-  if base and exponent then
-    local new_exp = tonumber(exponent) + 1
-    return "x^" .. new_exp .. "/" .. new_exp .. " + C"
+  -- Additional function integrals
+  if expr == "exp(x)" then return "exp(x) + C" end
+  if expr == "log(x)" then return "x*log(x) - x + C" end
+  if expr == "sqrt(x)" then return "2/3*x^(3/2) + C" end
+  if expr == "1/x" then return "log(x) + C" end
+  if expr == "1/(1+x^2)" then return "atan(x) + C" end
+  if expr == "1/sqrt(1-x^2)" then return "asin(x) + C" end
+  if expr == "1/(1-x^2)" then return "atanh(x) + C" end
+  -- x^n
+  local base2, exponent3 = expr:match("^(x)%^([%d%.]+)$")
+  if base2 and exponent3 then
+    local new_exp3 = tonumber(exponent3) + 1
+    return "x^" .. new_exp3 .. "/" .. new_exp3 .. " + C"
   end
-
-  -- Constant * x^n
-  local coeff, power = expr:match("^(%-?%d*%.?%d*)x%^([%d%.]+)$")
-  if coeff and power then
-    if coeff == "" then coeff = "1" end
-    local new_exp = tonumber(power) + 1
-    local result = tonumber(coeff) / new_exp
-    return tostring(result) .. "x^" .. tostring(new_exp) .. " + C"
+  -- x^(n)
+  local base2P, exponent3P = expr:match("^(x)%^%(([%d%.%-]+)%)$")
+  if base2P and exponent3P then
+    local new_exp3P = tonumber(exponent3P) + 1
+    return "x^" .. new_exp3P .. "/" .. new_exp3P .. " + C"
   end
-
-  -- Constant * x
-  coeff = expr:match("^(%-?%d*%.?%d*)x$")
-  if coeff then
-    if coeff == "" then coeff = "1" end
-    return coeff .. "*0.5x^2 + C"
+  -- a*x^n
+  local coeff2, power2 = expr:match("^(%-?%d*%.?%d*)x%^([%d%.]+)$")
+  if coeff2 and power2 then
+    if coeff2 == "" then coeff2 = "1" end
+    local new_exp4 = tonumber(power2) + 1
+    local result2 = tonumber(coeff2) / new_exp4
+    return tostring(result2) .. "x^" .. tostring(new_exp4) .. " + C"
   end
-
-  return "∫ not supported for: " .. expr
-end
-
-function on.charIn(char)
-  if editing then
-    input = input .. char
-    platform.window:invalidate()
+  -- a*x^(n)
+  local coeff2P, power2P = expr:match("^(%-?%d*%.?%d*)x%^%(([%d%.%-]+)%)$")
+  if coeff2P and power2P then
+    if coeff2P == "" then coeff2P = "1" end
+    local new_exp4P = tonumber(power2P) + 1
+    local result2P = tonumber(coeff2P) / new_exp4P
+    return tostring(result2P) .. "x^" .. tostring(new_exp4P) .. " + C"
   end
-end
-
-function on.backspaceKey()
-  input = input:sub(1, -2)
-  platform.window:invalidate()
-end
-
-function on.enterKey()
-  if view == "main" then
-    if editing then
-      editing = false
-      local result = ""
-      if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
-        local expr = input:match("d/d[xy]%((.+)%)")
-        result = expr and derivative(expr) or "Invalid format"
-      elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
-        local expr = input:match("∂/∂x%((.+)%)")
-        result = expr and derivative(expr) or "Invalid format"
-      elseif input:match("^∂/∂[yz]%(.+%)$") then
-        result = derivative(input)
-      elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
-        result = integrate(input:sub(4, -3))
-      elseif input:sub(1,4) == "int(" and input:sub(-1) == ")" then
-        local expr = input:match("int%((.+)%)")
-        result = expr and integrate(expr) or "Invalid format"
-      elseif input:sub(1,4) == "ast(" and input:sub(-1) == ")" then
-        local expr = input:match("ast%((.+)%)")
-        if expr then
-          local tokens = tokenize(expr)
-          local ast = buildAST(tokens)
-          result = ast and stringifyAST(ast) or "Error: incomplete expression"
-        else
-          result = "Invalid AST format"
-        end
-      -- Debug log for solve (optional for development)
-      elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
-        print("Solving:", input)
-        local eqn = input:match("solve%((.+)%)")
-        result = eqn and solve(eqn) or "Invalid solve format"
-      elseif input:sub(1,4) == "let " then
-        result = define(input)
-      elseif input:match("%w+%(.+%)") then
-        result = evalFunction(input)
-      elseif input:sub(1,4) == "int(" and input:match(",") then
-        local defint = input:match("int%((.+)%)")
-        result = defint and definiteInt(defint) or "Invalid definite integral"
-      elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
-        local inner = input:match("simplify%((.+)%)")
-        result = inner and simplify(inner) or "Invalid simplify format"
-      else
-        result = simplify(input)
+  -- a*x
+  coeff2 = expr:match("^(%-?%d*%.?%d*)x$")
+  if coeff2 then
+    if coeff2 == "" then coeff2 = "1" end
+    return coeff2 .. "*0.5x^2 + C"
+  end
+  -- sums: split at '+' outside parentheses
+  local function split_terms(expr, op)
+    local terms = {}
+    local level, last = 0, 1
+    for i = 1, #expr do
+      local c = expr:sub(i,i)
+      if c == "(" then level = level + 1 end
+      if c == ")" then level = level - 1 end
+      if c == op and level == 0 then
+        table.insert(terms, expr:sub(last, i-1))
+        last = i+1
       end
-      output = result
-      table.insert(history, input .. " → " .. result)
-      if store then pcall(function() store.set("cas_history", history) end) end
-      if store then pcall(function() store.set("cas_darkMode", darkMode) end) end
-      platform.window:invalidate()
-    else
-      -- User pressed Enter again after result: clear and reset for new input
-      editing = true
-      input = ""
-      output = ""
-      platform.window:invalidate()
     end
+    if last <= #expr then
+      table.insert(terms, expr:sub(last))
+    end
+    return terms
   end
+  -- sums
+  if expr:find("%+") then
+    local terms = split_terms(expr, "+")
+    local out = {}
+    for i, term in ipairs(terms) do
+      table.insert(out, integrate(term))
+    end
+    return table.concat(out, " + ")
+  end
+  -- differences
+  if expr:find("%-") then
+    local terms = split_terms(expr, "-")
+    local out = {}
+    for i, term in ipairs(terms) do
+      if i == 1 then
+        table.insert(out, integrate(term))
+      else
+        table.insert(out, "-("..integrate(term)..")")
+      end
+    end
+    return table.concat(out, " ")
+  end
+  return "∫ not supported for: " .. expr
+
+end
+
+-- Expand simple powers
+function expand(expr)
+    -- (x+a)^2 -> x^2+2ax+a^2
+    local a, b = expr:match("^%((x)%+([%d%.%-]+)%)%^2$")
+    if a and b then
+        return "x^2+" .. tostring(2*tonumber(b)) .. "x+" .. tostring(tonumber(b)*tonumber(b))
+    end
+    -- (a*x+b)^2
+    local c, d, e = expr:match("^%(([%d%.%-]*)x%+([%d%.%-]+)%)%^2$")
+    if c and d then
+        local cx = tonumber(c) ~= 0 and tonumber(c) or 1
+        local bx = tonumber(d)
+        return tostring(cx*cx).."x^2+"..tostring(2*cx*bx).."x+"..tostring(bx*bx)
+    end
+    -- (x+a)^3
+    local a2, b2 = expr:match("^%((x)%+([%d%.%-]+)%)%^3$")
+    if a2 and b2 then
+        local bnum = tonumber(b2)
+        return "x^3+"..tostring(3*bnum).."x^2+"..tostring(3*bnum^2).."x+"..tostring(bnum^3)
+    end
+    -- Default: cannot expand
+    return "Expand not supported for: " .. expr
+end
+
+-- Substitute variable
+function subs(expr, var, val)
+    local replaced = expr:gsub(var, "(" .. val .. ")")
+    local success, res = pcall(function()
+        if replaced:match("^[%d%+%-%*/%^%.%(%)]+$") then
+            return load("return "..replaced)()
+        else
+            return replaced
+        end
+    end)
+    if success then
+        return tostring(res)
+    else
+        return replaced
+    end
+end
+
+-- Polynomial factoring (quadratics only for now: ax^2+bx+c)
+function factor(expr)
+    local a, b, c = expr:match("^(%-?%d*)x%^2%+([%-?%d]*)x%+([%-?%d]*)$")
+    if a and b and c then
+        a = tonumber(a ~= "" and a or "1")
+        b = tonumber(b ~= "" and b or "0")
+        c = tonumber(c ~= "" and c or "0")
+        local D = b^2 - 4*a*c
+        if D < 0 then return "Irreducible over ℝ" end
+        local sqrtD = math.sqrt(D)
+        local r1 = (-b + sqrtD) / (2*a)
+        local r2 = (-b - sqrtD) / (2*a)
+        return string.format("%g*(x-%g)*(x-%g)", a, r1, r2)
+    end
+    return "Factoring not supported for: "..expr
+end
+
+-- GCD and LCM of two integers
+function gcd(a, b)
+    a = tonumber(a) b = tonumber(b)
+    if not a or not b then return "GCD error" end
+    while b ~= 0 do a, b = b, a % b end
+    return tostring(math.abs(a))
+end
+function lcm(a, b)
+    a = tonumber(a) b = tonumber(b)
+    if not a or not b then return "LCM error" end
+    return tostring(math.floor(math.abs(a * b) / tonumber(gcd(a, b))))
+end
+
+-- Trigonometric identities for sin, cos, tan double angle
+function trigid(expr)
+    if expr == "sin(2x)" then return "2sin(x)cos(x)" end
+    if expr == "cos(2x)" then return "cos(x)^2 - sin(x)^2" end
+    if expr == "tan(2x)" then return "2tan(x)/(1-tan(x)^2)" end
+    if expr == "sin^2(x)" then return "(1-cos(2x))/2" end
+    if expr == "cos^2(x)" then return "(1+cos(2x))/2" end
+    return "Trig identity not supported for: "..expr
+end
+
+-- ETK View System (copied from S2.lua)
+defaultFocus = nil
+
+View = class()
+
+function View:init(window)
+	self.window = window
+	self.widgetList = {}
+	self.focusList = {}
+	self.currentFocus = 0
+	self.currentCursor = "default"
+	self.prev_mousex = 0
+	self.prev_mousey = 0
+end
+
+function View:invalidate()
+	self.window:invalidate()
+end
+
+function View:setCursor(cursor)
+	if cursor ~= self.currentCursor then
+		self.currentCursor = cursor
+		self:invalidate()
+	end
+end
+
+function View:add(o)
+	table.insert(self.widgetList, o)
+	self:repos(o)
+	if o.acceptsFocus then
+		table.insert(self.focusList, 1, o)
+		if self.currentFocus > 0 then
+			self.currentFocus = self.currentFocus + 1
+		end
+	end
+	return o
+end
+
+function View:remove(o)
+	if self:getFocus() == o then
+		o:releaseFocus()
+	end
+	local i = 1
+	local f = 0
+	while i <= #self.focusList do
+		if self.focusList[i] == o then
+			f = i
+		end
+		i = i + 1
+	end
+	if f > 0 then
+		if self:getFocus() == o then
+			self:tabForward()
+		end
+		table.remove(self.focusList, f)
+		if self.currentFocus > f then
+			self.currentFocus = self.currentFocus - 1
+		end
+	end
+	f = 0
+	i = 1
+	while i <= #self.widgetList do
+		if self.widgetList[i] == o then
+			f = i
+		end
+		i = i + 1
+	end
+	if f > 0 then
+		table.remove(self.widgetList, f)
+	end
+end
+
+function View:repos(o)
+	local x = o.x
+	local y = o.y
+	local w = o.w
+	local h = o.h
+	if o.hConstraint == "right" then
+		x = scrWidth - o.w - o.dx1
+	elseif o.hConstraint == "center" then
+		x = (scrWidth - o.w + o.dx1) / 2
+	elseif o.hConstraint == "justify" then
+		w = scrWidth - o.x - o.dx1
+	end
+	if o.vConstraint == "bottom" then
+		y = scrHeight - o.h - o.dy1
+	elseif o.vConstraint == "middle" then
+		y = (scrHeight - o.h + o.dy1) / 2
+	elseif o.vConstraint == "justify" then
+		h = scrHeight - o.y - o.dy1
+	end
+	o:repos(x, y)
+	o:resize(w, h)
+end
+
+function View:resize()
+	for _, o in ipairs(self.widgetList) do
+		self:repos(o)
+	end
+end
+
+function View:hide(o)
+	if o.visible then
+		o.visible = false
+		self:releaseFocus(o)
+		if o:contains(self.prev_mousex, self.prev_mousey) then
+			o:onMouseLeave(o.x - 1, o.y - 1)
+		end
+		self:invalidate()
+	end
+end
+
+function View:show(o)
+	if not o.visible then
+		o.visible = true
+		if o:contains(self.prev_mousex, self.prev_mousey) then
+			o:onMouseEnter(self.prev_mousex, self.prev_mousey)
+		end
+		self:invalidate()
+	end
+end
+
+function View:getFocus()
+	if self.currentFocus == 0 then
+		return nil
+	end
+	return self.focusList[self.currentFocus]
+end
+
+function View:setFocus(obj)
+	if self.currentFocus ~= 0 then
+		if self.focusList[self.currentFocus] == obj then
+			return
+		end
+		self.focusList[self.currentFocus]:releaseFocus()
+	end
+	self.currentFocus = 0
+	for i = 1, #self.focusList do
+		if self.focusList[i] == obj then
+			self.currentFocus = i
+			obj:setFocus()
+			self:invalidate()
+			break
+		end
+	end
+end
+
+function View:releaseFocus(obj)
+	if self.currentFocus ~= 0 then
+		if self.focusList[self.currentFocus] == obj then
+			self.currentFocus = 0
+			obj:releaseFocus()
+			self:invalidate()
+		end
+	end
+end
+
+function View:sendStringToFocus(str)
+	local o = self:getFocus()
+	if not o then
+		o = defaultFocus
+		self:setFocus(o)
+	end
+	if o then
+		if o.visible then
+			if o:addString(str) then
+				self:invalidate()
+			else
+				o = nil
+			end
+		end
+	end
+
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible then
+				if o:addString(str) then
+					self:setFocus(o)
+					self:invalidate()
+					break
+				end
+			end
+		end
+	end
+end
+
+function View:backSpaceHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsBackSpace then
+			o:backSpaceHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsBackSpace then
+				o:backSpaceHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:tabForward()
+	local nextFocus = self.currentFocus + 1
+	if nextFocus > #self.focusList then
+		nextFocus = 1
+	end
+	self:setFocus(self.focusList[nextFocus])
+	if self:getFocus() then
+		if not self:getFocus().visible then
+			self:tabForward()
+		end
+	end
+	self:invalidate()
+end
+
+function View:tabBackward()
+	local nextFocus = self.currentFocus - 1
+	if nextFocus < 1 then
+		nextFocus = #self.focusList
+	end
+	self:setFocus(self.focusList[nextFocus])
+	if not self:getFocus().visible then
+		self:tabBackward()
+	end
+	self:invalidate()
+end
+
+function View:onMouseDown(x, y)
+	for _, o in ipairs(self.widgetList) do
+		if o.visible and o.acceptsFocus and o:contains(x, y) then
+			self.mouseCaptured = o
+			o:onMouseDown(o, window, x - o.x, y - o.y)
+			self:setFocus(o)
+			self:invalidate()
+			return
+		end
+	end
+	if self:getFocus() then
+		self:setFocus(nil)
+		self:invalidate()
+	end
+end
+
+function View:onMouseMove(x, y)
+	local prev_mousex = self.prev_mousex
+	local prev_mousey = self.prev_mousey
+	for _, o in ipairs(self.widgetList) do
+		local xyin = o:contains(x, y)
+		local prev_xyin = o:contains(prev_mousex, prev_mousey)
+		if xyin and not prev_xyin and o.visible then
+			o:onMouseEnter(x, y)
+			self:invalidate()
+		elseif prev_xyin and (not xyin or not o.visible) then
+			o:onMouseLeave(x, y)
+			self:invalidate()
+		end
+	end
+	self.prev_mousex = x
+	self.prev_mousey = y
+end
+
+function View:onMouseUp(x, y)
+	local mc = self.mouseCaptured
+	if mc then
+		self.mouseCaptured = nil
+		if mc:contains(x, y) then
+			mc:onMouseUp(x - mc.x, y - mc.y)
+		end
+	end
+end
+
+function View:enterHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsEnter then
+			o:enterHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsEnter then
+				o:enterHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowLeftHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowLeft then
+			o:arrowLeftHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowLeft then
+				o:arrowLeftHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowRightHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowRight then
+			o:arrowRightHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowRight then
+				o:arrowRightHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowUpHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowUp then
+			o:arrowUpHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowUp then
+				o:arrowUpHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowDownHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowDown then
+			o:arrowDownHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowDown then
+				o:arrowDownHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:paint(gc)
+	local fo = self:getFocus()
+	for _, o in ipairs(self.widgetList) do
+		if o.visible then
+			o:paint(gc, fo == o)
+			if fo == o then
+				gc:setColorRGB(100, 150, 255)
+				gc:drawRect(o.x - 1, o.y - 1, o.w + 1, o.h + 1)
+				gc:setPen("thin", "smooth")
+				gc:setColorRGB(0, 0, 0)
+			end
+		end
+	end
+	cursor.set(self.currentCursor)
+end
+
+theView = nil
+
+Widget = class()
+
+function Widget:setHConstraints(hConstraint, dx1)
+	self.hConstraint = hConstraint
+	self.dx1 = dx1
+end
+
+function Widget:setVConstraints(vConstraint, dy1)
+	self.vConstraint = vConstraint
+	self.dy1 = dy1
+end
+
+function Widget:init(view, x, y, w, h)
+	self.xOrig = x
+	self.yOrig = y
+	self.view = view
+	self.x = x
+	self.y = y
+	self.w = w
+	self.h = h
+	self.acceptsFocus = false
+	self.visible = true
+	self.acceptsEnter = false
+	self.acceptsEscape = false
+	self.acceptsTab = false
+	self.acceptsDelete = false
+	self.acceptsBackSpace = false
+	self.acceptsReturn = false
+	self.acceptsArrowUp = false
+	self.acceptsArrowDown = false
+	self.acceptsArrowLeft = false
+	self.acceptsArrowRight = false
+	self.hConstraint = "left"
+	self.vConstraint = "top"
+end
+
+function Widget:repos(x, y)
+	self.x = x
+	self.y = y
+end
+
+function Widget:resize(w, h)
+	self.w = w
+	self.h = h
+end
+
+function Widget:setFocus() end
+function Widget:releaseFocus() end
+
+function Widget:contains(x, y)
+	return x >= self.x and x <= self.x + self.w
+			and y >= self.y and y <= self.y + self.h
+end
+
+function Widget:onMouseEnter(x, y) end
+function Widget:onMouseLeave(x, y) end
+function Widget:paint(gc, focused) end
+function Widget:enterHandler() end
+function Widget:escapeHandler() end
+function Widget:tabHandler() end
+function Widget:deleteHandler() end
+function Widget:backSpaceHandler() end
+function Widget:returnHandler() end
+function Widget:arrowUpHandler() end
+function Widget:arrowDownHandler() end
+function Widget:arrowLeftHandler() end
+function Widget:arrowRightHandler() end
+function Widget:onMouseDown(x, y) end
+function Widget:onMouseUp(x, y) end
+
+Button = class(Widget)
+
+function Button:init(view, x, y, w, h, default, command, shortcut)
+	Widget.init(self, view, x, y, w, h)
+	self.acceptsFocus = true
+	self.command = command or function() end
+	self.default = default
+	self.shortcut = shortcut
+	self.clicked = false
+	self.highlighted = false
+	self.acceptsEnter = true
+end
+
+function Button:enterHandler()
+	if self.acceptsEnter then
+		self:command()
+	end
+end
+
+function Button:escapeHandler()
+	if self.acceptsEscape then
+		self:command()
+	end
+end
+
+function Button:tabHandler()
+	if self.acceptsTab then
+		self:command()
+	end
+end
+
+function Button:deleteHandler()
+	if self.acceptsDelete then
+		self:command()
+	end
+end
+
+function Button:backSpaceHandler()
+	if self.acceptsBackSpace then
+		self:command()
+	end
+end
+
+function Button:returnHandler()
+	if self.acceptsReturn then
+		self:command()
+	end
+end
+
+function Button:arrowUpHandler()
+	if self.acceptsArrowUp then
+		self:command()
+	end
+end
+
+function Button:arrowDownHandler()
+	if self.acceptsArrowDown then
+		self:command()
+	end
+end
+
+function Button:arrowLeftHandler()
+	if self.acceptsArrowLeft then
+		self:command()
+	end
+end
+
+function Button:arrowRightHandler()
+	if self.acceptsArrowRight then
+		self:command()
+	end
+end
+
+function Button:onMouseDown(x, y)
+	self.clicked = true
+	self.highlighted = true
+end
+
+function Button:onMouseEnter(x, y)
+	theView:setCursor("hand pointer")
+	if self.clicked and not self.highlighted then
+		self.highlighted = true
+	end
+end
+
+function Button:onMouseLeave(x, y)
+	theView:setCursor("default")
+	if self.clicked and self.highlighted then
+		self.highlighted = false
+	end
+end
+
+function Button:cancelClick()
+	if self.clicked then
+		self.highlighted = false
+		self.clicked = false
+	end
+end
+
+function Button:onMouseUp(x, y)
+	self:cancelClick()
+	self:command()
+end
+
+function Button:addString(str)
+	if str == " " or str == self.shortcut then
+		self:command()
+		return true
+	end
+	return false
+end
+
+ImgLabel = class(Widget)
+
+function ImgLabel:init(view, x, y, img)
+	self.img = image.new(img)
+	self.w = image.width(self.img)
+	self.h = image.height(self.img)
+	Widget.init(self, view, x, y, self.w, self.h)
+end
+
+function ImgLabel:paint(gc, focused)
+	gc:drawImage(self.img, self.x, self.y)
+end
+
+ImgButton = class(Button)
+
+function ImgButton:init(view, x, y, img, command, shortcut)
+	self.img = image.new(img)
+	self.w = image.width(self.img)
+	self.h = image.height(self.img)
+	Button.init(self, view, x, y, self.w, self.h, false, command, shortcut)
+end
+
+function ImgButton:paint(gc, focused)
+	gc:drawImage(self.img, self.x, self.y)
+end
+
+TextButton = class(Button)
+
+function TextButton:init(view, x, y, text, command, shortcut)
+	self.textid = text
+	self.text = getLocaleText(text)
+	self:resize(0, 0)
+	Button.init(self, view, x, y, self.w, self.h, false, command, shortcut)
+end
+
+function TextButton:resize(w, h)
+	self.text = getLocaleText(self.textid)
+	self.w = getStringWidth(self.text) + 5
+	self.h = getStringHeight(self.text) + 5
+end
+
+function TextButton:paint(gc, focused)
+	gc:setColorRGB(223, 223, 223)
+	gc:drawRect(self.x + 1, self.y + 1, self.w - 2, self.h - 2)
+	gc:setColorRGB(191, 191, 191)
+	gc:fillRect(self.x + 1, self.y + 1, self.w - 3, self.h - 3)
+	gc:setColorRGB(223, 223, 223)
+	gc:drawString(self.text, self.x + 3, self.y + 3, "top")
+	gc:setColorRGB(0, 0, 0)
+	gc:drawString(self.text, self.x + 2, self.y + 2, "top")
+	gc:drawRect(self.x, self.y, self.w - 2, self.h - 2)
+end
+
+VScrollBar = class(Widget)
+
+function VScrollBar:init(view, x, y, w, h)
+	self.pos = 10
+	self.siz = 10
+	Widget.init(self, view, x, y, w, h)
+end
+
+function VScrollBar:paint(gc, focused)
+	gc:setColorRGB(0, 0, 0)
+	gc:drawRect(self.x, self.y, self.w, self.h)
+	gc:fillRect(self.x + 2, self.y + self.h - (self.h - 4) * (self.pos + self.siz) / 100 - 2, self.w - 3, math.max(1, (self.h - 4) * self.siz / 100 + 1))
+end
+
+TextLabel = class(Widget)
+
+function TextLabel:init(view, x, y, text)
+	self:setText(text)
+	Widget.init(self, view, x, y, self.w, self.h)
+end
+
+function TextLabel:resize(w, h)
+	self.text = getLocaleText(self.textid)
+	self.w = getStringWidth(self.text)
+	self.h = getStringHeight(self.text)
+end
+
+function TextLabel:setText(text)
+	self.textid = text
+	self.text = getLocaleText(text)
+	self:resize(0, 0)
+end
+
+function TextLabel:getText()
+	return self.text
+end
+
+function TextLabel:paint(gc, focused)
+	gc:setColorRGB(0, 0, 0)
+	gc:drawString(self.text, self.x, self.y, "top")
+end
+
+RichTextEditor = class(Widget)
+
+function RichTextEditor:init(view, x, y, w, h, text)
+	self.editor = D2Editor.newRichText()
+	self.readOnly = false
+	self:repos(x, y)
+	self.editor:setFontSize(fsize)
+	self.editor:setFocus(false)
+	self.text = text
+	self:resize(w, h)
+	Widget.init(self, view, x, y, self.w, self.h, true)
+	self.acceptsFocus = true
+	self.editor:setExpression(text)
+	self.editor:setBorder(1)
+end
+
+function RichTextEditor:onMouseEnter(x, y)
+	theView:setCursor("text")
+end
+
+function RichTextEditor:onMouseLeave(x, y)
+	theView:setCursor("default")
+end
+
+function RichTextEditor:repos(x, y)
+	if not self.editor then return end
+	self.editor:setBorderColor((showEditorsBorders and 0) or 0xffffff )
+	self.editor:move(x, y)
+	Widget.repos(self, x, y)
+end
+
+function RichTextEditor:resize(w, h)
+	if not self.editor then return end
+	self.editor:resize(w, h)
+	Widget.resize(self, w, h)
+end
+
+function RichTextEditor:setFocus()
+	self.editor:setFocus(true)
+end
+
+function RichTextEditor:releaseFocus()
+	self.editor:setFocus(false)
+end
+
+function RichTextEditor:addString(str)
+	local currentText = self.editor:getText() or ""
+	self.editor:setText(currentText .. str)
+	return true
+end
+
+function RichTextEditor:paint(gc, focused) end
+
+MathEditor = class(RichTextEditor)
+
+function ulen(str)
+	if not str then return 0 end
+	local n = string.len(str)
+	local i = 1
+	local j = 1
+	local c
+	while (j <= n) do
+		c = string.len(string.usub(str, i, i))
+		j = j + c
+		i = i + 1
+	end
+	return i - 1
+end
+
+function MathEditor:init(view, x, y, w, h, text)
+	RichTextEditor.init(self, view, x, y, w, h, text)
+	self.editor:setBorder(1)
+	self.acceptsEnter = true
+	self.acceptsBackSpace = true
+	self.result = false
+	self.editor:registerFilter({
+		arrowLeft = function()
+			_, curpos = self.editor:getExpressionSelection()
+			if curpos < 7 then
+				on.arrowLeft()
+				return true
+			end
+			return false
+		end,
+		arrowRight = function()
+			currentText, curpos = self.editor:getExpressionSelection()
+			if curpos > ulen(currentText) - 2 then
+				on.arrowRight()
+				return true
+			end
+			return false
+		end,
+		tabKey = function()
+			theView:tabForward()
+			return true
+		end,
+		mouseDown = function(x, y)
+			theView:onMouseDown(x, y)
+			return false
+		end,
+		backspaceKey = function()
+			if (self == fctEditor) then
+				self:fixCursor()
+				_, curpos = self.editor:getExpressionSelection()
+				if curpos <= 6 then return true end
+				return false
+			else
+				self:backSpaceHandler()
+				return true
+			end
+		end,
+		deleteKey = function()
+			if (self == fctEditor) then
+				self:fixCursor()
+				currentText, curpos = self.editor:getExpressionSelection()
+				if curpos >= ulen(currentText) - 1 then return true end
+				return false
+			else
+				self:backSpaceHandler()
+				return true
+			end
+		end,
+		enterKey = function()
+			self:enterHandler()
+			return true
+		end,
+		returnKey = function()
+			theView:enterHandler()
+			return true
+		end,
+		escapeKey = function()
+			on.escapeKey()
+			return true
+		end,
+		charIn = function(c)
+			if (self == fctEditor) then
+				self:fixCursor()
+				return false
+			else
+				return self.readOnly
+			end
+		end
+	})
+end
+
+function MathEditor:fixContent()
+	local currentText = self.editor:getExpressionSelection()
+	if currentText == "" or currentText == nil then
+		self.editor:createMathBox()
+	end
+end
+
+function MathEditor:fixCursor()
+	local currentText, curpos, selstart = self.editor:getExpressionSelection()
+	local l = ulen(currentText)
+	if curpos < 6 or selstart < 6 or curpos > l - 1 or selstart > l - 1 then
+		if curpos < 6 then curpos = 6 end
+		if selstart < 6 then selstart = 6 end
+		if curpos > l - 1 then curpos = l - 1 end
+		if selstart > l - 1 then selstart = l - 1 end
+		self.editor:setExpression(currentText, curpos, selstart)
+	end
+end
+
+function MathEditor:getExpression()
+	if not self.editor then return "" end
+	local rawexpr = self.editor:getExpression()
+	local expr = ""
+	local n = string.len(rawexpr)
+	local b = 0
+	local bs = 0
+	local bi = 0
+	local status = 0
+	local i = 1
+	while i <= n do
+		local c = string.sub(rawexpr, i, i)
+		if c == "{" then
+			b = b + 1
+		elseif c == "}" then
+			b = b - 1
+		end
+		if status == 0 then
+			if string.sub(rawexpr, i, i + 5) == "\\0el {" then
+				bs = i + 6
+				i = i + 5
+				status = 1
+				bi = b
+				b = b + 1
+			end
+		else
+			if b == bi then
+				status = 0
+				expr = expr .. string.sub(rawexpr, bs, i - 1)
+			end
+		end
+		i = i + 1
+	end
+	return expr
+end
+
+function MathEditor:setFocus()
+	if not self.editor then return end
+	self.editor:setFocus(true)
+end
+
+function MathEditor:releaseFocus()
+	if not self.editor then return end
+	self.editor:setFocus(false)
+end
+
+function MathEditor:addString(str)
+	if not self.editor then return false end
+	self:fixCursor()
+	local currentText, curpos, selstart = self.editor:getExpressionSelection()
+	local newText = string.usub(currentText, 1, math.min(curpos, selstart)) .. str .. string.usub(currentText, math.max(curpos, selstart) + 1, ulen(currentText))
+	self.editor:setExpression(newText, math.min(curpos, selstart) + ulen(str))
+	return true
+end
+
+function MathEditor:backSpaceHandler()
+    -- No-op or custom deletion logic (history removal not implemented)
+end
+
+function MathEditor:enterHandler()
+    -- Call the custom on.enterKey handler instead of missing global
+    on.enterKey()
+end
+
+function MathEditor:paint(gc)
+	if showHLines and not self.result then
+		gc:setColorRGB(100, 100, 100)
+		local ycoord = self.y - (showEditorsBorders and 0 or 2)
+		gc:drawLine(1, ycoord, platform.window:width() - sbv.w - 2, ycoord)
+		gc:setColorRGB(0, 0, 0)
+	end
+end
+
+function on.arrowUp()
+  if theView then
+    if theView:getFocus() == fctEditor then
+      on.tabKey()
+    else
+      on.tabKey()
+      if theView:getFocus() ~= fctEditor then on.tabKey() end
+    end
+    reposView()
+  end
+end
+
+function on.arrowDown()
+  if theView then
+    on.backtabKey()
+    if theView:getFocus() ~= fctEditor then on.backtabKey() end
+    reposView()
+  end
+end
+
+function on.arrowLeft()
+  if theView then
+    on.tabKey()
+    reposView()
+  end
+end
+
+function on.arrowRight()
+  if theView then
+    on.backtabKey()
+    reposView()
+  end
+end
+
+function on.charIn(ch)
+  if theView then theView:sendStringToFocus(ch) end
 end
 
 function on.tabKey()
-  if view == "main" then
-    view = "history"
-  elseif view == "history" then
-    view = "about"
-  elseif view == "about" then
-    view = "help"
-  elseif view == "help" then
-    view = "main"
-  end
-  platform.window:invalidate()
+  if theView then theView:tabForward(); reposView() end
 end
 
+function on.backtabKey()
+  if theView then theView:tabBackward(); reposView() end
+end
 
--- Utility function to format superscripts for powers like x^2 -> x²
+function on.enterKey()
+  if not fctEditor or not fctEditor.getExpression then return end
 
-function formatSuperscripts(str)
-  local map = {
-    ["0"] = "⁰", ["1"] = "¹", ["2"] = "²", ["3"] = "³",
-    ["4"] = "⁴", ["5"] = "⁵", ["6"] = "⁶", ["7"] = "⁷",
-    ["8"] = "⁸", ["9"] = "⁹", ["-"] = "⁻"
-  }
-  return str:gsub("x%^([%-%d]+)", function(exp)
-    local formatted = ""
-    for c in exp:gmatch(".") do
-      formatted = formatted .. (map[c] or "")
+  local input = fctEditor:getExpression()
+  if not input or input == "" then return end
+
+  local result = ""
+  _G.luaCASerror = false
+  local success, err = pcall(function()
+    if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
+      local expr = input:match("d/d[xy]%((.+)%)")
+      result = expr and derivative(expr) or "Invalid format"
+    elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
+      local expr = input:match("∂/∂x%((.+)%)")
+      result = expr and derivative(expr) or "Invalid format"
+    elseif input:match("^∂/∂[yz]%(.+%)$") then
+      result = derivative(input)
+    elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
+      result = integrate(input:sub(4, -3))
+    elseif input:sub(1,4) == "int(" and input:sub(-1) == ")" then
+      local expr = input:match("int%((.+)%)")
+      result = expr and integrate(expr) or "Invalid format"
+    elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
+      local eqn = input:match("solve%((.+)%)")
+      if eqn and not eqn:find("=") then
+        eqn = eqn .. "=0"
+      end
+      result = eqn and solve(eqn) or "Invalid solve format"
+    elseif input:sub(1,4) == "let " then
+      result = define(input)
+    elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
+        local inner = input:match("expand%((.+)%)")
+        result = inner and expand(inner) or "Invalid expand format"
+    elseif input:sub(1,5) == "subs(" and input:sub(-1) == ")" then
+        local inner, var, val = input:match("subs%(([^,]+),%s*([^,]+),%s*([^%)]+)%)")
+        result = (inner and var and val) and subs(inner, var, val) or "Invalid subs format"
+    elseif input:sub(1,7) == "factor(" and input:sub(-1) == ")" then
+        local inner = input:match("factor%((.+)%)")
+        result = inner and factor(inner) or "Invalid factor format"
+    elseif input:sub(1,4) == "gcd(" and input:sub(-1) == ")" then
+        local a, b = input:match("gcd%(([^,]+),%s*([^%)]+)%)")
+        result = (a and b) and gcd(a, b) or "Invalid gcd format"
+    elseif input:sub(1,4) == "lcm(" and input:sub(-1) == ")" then
+        local a, b = input:match("lcm%(([^,]+),%s*([^%)]+)%)")
+        result = (a and b) and lcm(a, b) or "Invalid lcm format"
+    elseif input:sub(1,7) == "trigid(" and input:sub(-1) == ")" then
+        local inner = input:match("trigid%((.+)%)")
+        result = inner and trigid(inner) or "Invalid trigid format"
+    elseif input:match("%w+%(.+%)") then
+      result = evalFunction(input)
+    elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
+      local inner = input:match("simplify%((.+)%)")
+      result = inner and simplify(inner) or "Invalid simplify format"
+    else
+      result = simplify(input)
     end
-    return "x" .. formatted
+    if result == "" or not result then
+      result = "No result. Internal CAS fallback used."
+    end
   end)
+  if not success then
+    result = "Error: " .. tostring(err)
+    _G.luaCASerror = true
+  end
+
+  -- Add to history display
+  addME(input, result)
+
+  -- Clear the input editor and ready for next input
+  if fctEditor and fctEditor.editor then
+    fctEditor.editor:setText("")
+    fctEditor:fixContent()
+  end
+
+  -- Redraw UI
+  if platform and platform.window and platform.window.invalidate then
+    platform.window:invalidate()
+  end
+
+  -- Optionally save last result globally if needed
+  res = result
 end
 
-function prettyPrint(expr, gc, x, y)
-  expr = expr or ""
-  -- Simple recursive pretty-printer for basic "a/b", powers, roots
-  -- Only handles simple single-letter numerator/denominator
-  -- Does not parse full AST; parses strings for now
-  if expr == nil or expr == "" then
-    -- Print nothing (or a placeholder if desired), but always return a valid height
-    return 18
-  end
-  local frac = expr:match("^(.-)/(%b())$")
-  if frac then -- e.g. "x/(x+1)"
-    local num, denom = expr:match("^(.-)/%((.+)%)$")
-    if num and denom then
-      gc:drawString(num, x + 15, y, "top")
-      local numWidth = gc:getStringWidth(num)
-      local denWidth = gc:getStringWidth(denom)
-      local fracWidth = math.max(numWidth, denWidth)
-      gc:drawLine(x + 12, y + 14, x + 12 + fracWidth + 6, y + 14)
-      gc:drawString(denom, x + 15, y + 18, "top")
-      return 28
-    end
-  end
-  local num, denom = expr:match("^(.-)/(.+)$")
-  if num and denom and not num:find("%+") and not denom:find("%+") then
-    -- Only simple "a/b" with no "+"
-    gc:drawString(num, x + 10, y, "top")
-    local numWidth = gc:getStringWidth(num)
-    local denWidth = gc:getStringWidth(denom)
-    local fracWidth = math.max(numWidth, denWidth)
-    gc:drawLine(x + 7, y + 14, x + 7 + fracWidth + 6, y + 14)
-    gc:drawString(denom, x + 10, y + 18, "top")
-    return 28
-  end
-
-  -- Exponents (superscript handled by formatSuperscripts)
-  if expr:find("x%^") then
-    gc:drawString(formatSuperscripts(expr), x, y, "top")
-    return 18
-  end
-
-  -- Square roots as "√(stuff)"
-  local sq = expr:match("^sqrt%((.+)%)$")
-  if sq then
-    gc:drawString("√(" .. sq .. ")", x, y, "top")
-    return 18
-  end
-
-  -- Otherwise just print as-is, formatted
-  gc:drawString(formatSuperscripts(expr), x, y, "top")
-  return 18
+function on.returnKey()
+  on.enterKey()
 end
 
--- Helper: split operator and argument for prettyPrint sizing
-function splitOperatorInput(expr)
-  -- e.g. "d/dx(x^2)" => "d/dx", "x^2"
-  local op, arg = expr:match("^([^%(]+)%((.+)%)$")
-  if op and arg then return op, arg end
-  return nil, nil
-end
-
--- Helper: compute prettyPrint height for an expression
-function getPrettyPrintHeight(expr, gc)
-  expr = expr or ""
-  local op, arg = splitOperatorInput(expr)
-  if op and arg and not expr:find("^.+%s%(") then
-    if arg:match("^.+/.+$") then return 47 end
-    return 37
-  elseif expr:match("^.+/.+$") then
-    return 28
-  else
-    return 18
-  end
-end
-
-function on.paint(gc)
-  local w, h = platform.window:width(), platform.window:height()
-  local palette = darkMode and palette_dark or palette_light
-
-  -- Fill background with bg color before faded symbols, header, boxes
-  gc:setColorRGB(unpack(palette.bg))
-  gc:fillRect(0, 0, w, h)
-
-  -- Faded background, as before
-  gc:setFont("serif", "b", 48)
-  -- faded symbols: set color depending on darkMode
-  for _, sym in ipairs({ "∫", "dx", "d/dx", "Σ", "π", "∞", "∂" }) do
-    local x = math.random(0, w - 40)
-    local y = math.random(35, h - 60)
-    if darkMode then
-      gc:setColorRGB(120,120,120)
-    else
-      gc:setColorRGB(unpack(palette.faded))
-    end
-    gc:drawString(sym, x, y, "top")
-  end
-
-  -- Gradient header (subtle)
-  for i = 0, 34 do
-    local t = i/34
-    local r = math.floor(palette.header[1]*(1-t) + palette.header[1]*t)
-    local g = math.floor(palette.header[2]*(1-t) + palette.header[2]*t)
-    local b = math.floor(palette.header[3]*(1-t) + palette.header[3]*t)
-    gc:setColorRGB(r, g, b)
-    gc:drawLine(0, i, w, i)
-  end
-  -- header/title section: set color for header text
-  gc:setColorRGB(255,255,255)
-  gc:setFont("serif", "b", 18)
-  gc:drawString("∂", 10, 3, "top")
-  gc:setFont("sansserif", "b", 16)
-  gc:drawString("Symbolic Calculus Engine", 32, 10, "top")
-  gc:setColorRGB(unpack(palette.text))
-  gc:setFont("sansserif", "i", 10)
-  gc:drawString(" ", w - 110, 10, "top")
-
-  if view == "main" then
-    gc:setColorRGB(unpack(palette.text))
-    gc:setFont("sansserif", "r", 12)
-    gc:drawString("Input:", 10, 40, "top")
-    local inputStr = (input and input ~= "" and input) or "Type here..."
-    local outputStr = output or ""
-    -- Dynamic input/output box heights
-    local in_box_h = math.max(25, getPrettyPrintHeight(inputStr, gc) + 8)
-    local out_box_h = math.max(25, getPrettyPrintHeight(outputStr, gc) + 8)
-
-    -- Input box (modern fillRect/drawRect, improved padding/colors)
-    gc:setColorRGB(unpack(palette.inputBG)) -- input background
-    gc:fillRect(10, 60, w - 20, in_box_h)
-    gc:setColorRGB(unpack(palette.inputBorder)) -- input border
-    gc:drawRect(10, 60, w - 20, in_box_h)
-    gc:setColorRGB(unpack(palette.text))
-    prettyPrint(inputStr, gc, 18, 60 + math.floor((in_box_h - getPrettyPrintHeight(inputStr, gc))/2), w - 24)
-
-    -- Autoprompt suggestions
-    gc:setFont("sansserif", "i", 9)
-    local suggestion_y = 60 + in_box_h + 5
-    if input:find("^d/dx") then
-      gc:setColorRGB(unpack(palette.text))
-      gc:drawString("Derivative of an expression, e.g. d/dx(x^2)", 18, suggestion_y, "top")
-      suggestion_y = suggestion_y + 16
-    end
-    if input:find("^∫%(") or input:find("^int%(") then
-      gc:setColorRGB(unpack(palette.text))
-      gc:drawString("Integral: ∫(x^2)dx or int(x^2)", 18, suggestion_y, "top")
-      suggestion_y = suggestion_y + 16
-    end
-    if input:find("^solve%(") then
-      gc:setColorRGB(unpack(palette.text))
-      gc:drawString("Equation solver: solve(x^2 = 4)", 18, suggestion_y, "top")
-      suggestion_y = suggestion_y + 16
-    end
-    if input:find("^let ") then
-      gc:setColorRGB(unpack(palette.text))
-      gc:drawString("Function: let f(x) = x^2", 18, suggestion_y, "top")
-      suggestion_y = suggestion_y + 16
-    end
-
-    -- Output box (modern fillRect/drawRect, fixed position/colors)
-    local outputTop = 132
-    gc:setColorRGB(unpack(palette.outBG)) -- output background
-    gc:fillRect(10, outputTop, w - 20, out_box_h)
-    gc:setColorRGB(unpack(palette.outBorder)) -- output border
-    gc:drawRect(10, outputTop, w - 20, out_box_h)
-    gc:setColorRGB(unpack(palette.text))
-    prettyPrint(outputStr, gc, 18, outputTop + math.floor((out_box_h - getPrettyPrintHeight(outputStr, gc))/2), w - 24)
-
-    -- Footer instructions
-    gc:setFont("sansserif", "i", 10)
-    gc:setColorRGB(unpack(palette.text))
-    gc:drawString("↵ ENTER = compute   |   TAB = switch view", 18, h - 40, "top")
-    gc:drawString("TAB = switch view (History, About, Help)", 18, h - 55, "top")
-    gc:drawString("Supports: d/dx(expr), ∫(expr)dx, int(expr), ast(expr)", 18, h - 25, "top")
-  elseif view == "history" then
-    gc:setColorRGB(unpack(palette.text))
-    gc:setFont("sansserif", "b", 12)
-    gc:drawString("Previous Computations:", 10, 40, "top")
-    local y = 60
-    local historyPad = 8
-    gc:setFont("sansserif", "r", 10)
-    gc:setColorRGB(unpack(palette.text))
-    for i = #history, math.max(1, #history - 10), -1 do
-      gc:drawString(history[i], 10, y, "top")
-      y = y + 15 + historyPad
-    end
-  elseif view == "about" then
-    gc:setColorRGB(unpack(palette.text))
-    gc:setFont("sansserif", "b", 12)
-    gc:drawString("About This Tool", 10, 40, "top")
-    gc:setFont("sansserif", "r", 10)
-    gc:drawString("A lightweight symbolic calculator engine", 10, 60, "top")
-    gc:drawString("Built in Lua for TI-Nspire CX II", 10, 75, "top")
-    gc:drawString("Supports derivatives, integrals, simplification", 10, 90, "top")
-    gc:drawString("Developed by @DeltaDev", 10, 105, "top")
-    local toggleText = darkMode and "Switch to Light Mode" or "Switch to Dark Mode"
-    gc:setColorRGB(unpack(palette.text))
-    gc:drawString(toggleText, 10, 130, "top")
-    -- Draw switch box (rectangle) for mode
-    local boxX, boxY = 170, 130
-    gc:setColorRGB(200, 200, 200)
-    gc:drawRect(boxX, boxY, 32, 16)
-    if darkMode then
-      gc:setColorRGB(90, 170, 220)
-      gc:fillRect(boxX+16, boxY, 16, 16)
-      gc:setColorRGB(60, 60, 60)
-      gc:drawString("L", boxX+18, boxY-2, "top")
-    else
-      gc:setColorRGB(255, 230, 50)
-      gc:fillRect(boxX, boxY, 16, 16)
-      gc:setColorRGB(90, 90, 90)
-      gc:drawString("D", boxX+2, boxY-2, "top")
-    end
-  elseif view == "help" then
-    gc:setColorRGB(unpack(palette.text))
-    gc:setFont("sansserif", "b", 12)
-    gc:drawString("Help & Examples", 10, 40, "top")
-    gc:setFont("sansserif", "r", 10)
-    local y = 60
-    local examples = {
-      "d/dx(x^2 + 3x)            → 2x + 3",
-      "∫(x^2 + 1)dx              → 1/3x^3 + x + C",
-      "simplify(2x + 3x)         → 5x",
-      "solve(x^2 - 4 = 0)        → x₁ = 2, x₂ = -2",
-      "int(x^2, 0, 2)            → (4/3) - (0)",
-      "let f(x) = x^2 + 1        → Store a function",
-      "f(2)                      → 5",
-      "ast(x^2 + 2x + 1)         → Abstract Syntax Tree",
-    }
-    for _, ex in ipairs(examples) do
-      gc:drawString(ex, 10, y, "top")
-      y = y + 15
-    end
-  end
+function on.mouseMove(x, y)
+  if theView then theView:onMouseMove(x, y) end
 end
 
 function on.mouseDown(x, y)
-  -- Switch box: (x in [170,202], y in [130,146])
-  if view == "about" and y >= 130 and y <= 146 and x >= 170 and x <= 202 then
-    darkMode = not darkMode
-    if store then pcall(function() store.set("cas_darkMode", darkMode) end) end
-    platform.window:invalidate()
-  -- Also allow toggling by clicking on the text (legacy region)
-  elseif view == "about" and y >= 130 and y <= 150 then
-    darkMode = not darkMode
-    if store then pcall(function() store.set("cas_darkMode", darkMode) end) end
-    platform.window:invalidate()
-  end
+  if theView then theView:onMouseDown(x, y) end
+end
+
+function on.mouseUp(x, y)
+  if theView then theView:onMouseUp(x, y) end
+end
+
+function initFontGC(gc)
+	gc:setFont(font, style, fsize)
+end
+
+function getStringHeightGC(text, gc)
+	initFontGC(gc)
+	return gc:getStringHeight(text)
+end
+
+function getStringHeight(text)
+	return platform.withGC(getStringHeightGC, text)
+end
+
+function getStringWidthGC(text, gc)
+	initFontGC(gc)
+	return gc:getStringWidth(text)
+end
+
+function getStringWidth(text)
+	return platform.withGC(getStringWidthGC, text)
+end
+
+
+----------------------------------------------------------------------
+--                           History Layout                           --
+----------------------------------------------------------------------
+
+-- Find the “partner” editor for a history entry
+function getParME(editor)
+    for i = 1, #histME2 do
+        if histME2[i].editor == editor then
+            return histME1[i]
+        end
+    end
+    return nil
+end
+
+-- Map a D2Editor instance back to its MathEditor wrapper
+function getME(editor)
+    if fctEditor and fctEditor.editor == editor then
+        return fctEditor
+    else
+        for i = 1, #histME1 do
+            if histME1[i].editor == editor then
+                return histME1[i]
+            end
+        end
+        for i = 1, #histME2 do
+            if histME2[i].editor == editor then
+                return histME2[i]
+            end
+        end
+    end
+    return nil
+end
+
+-- Get the “index” of a given MathEditor in the history stack
+function getMEindex(me)
+    if fctEditor and fctEditor.editor == me then
+        return 0
+    else
+        local ti = 0
+        for i = #histME1, 1, -1 do
+            if histME1[i] == me then
+                return ti
+            end
+            ti = ti + 1
+        end
+        ti = 0
+        for i = #histME2, 1, -1 do
+            if histME2[i] == me then
+                return ti
+            end
+            ti = ti + 1
+        end
+    end
+    return 0
+end
+
+-- Global offset for history scrolling
+ioffset = 0
+
+function reposView()
+    local focusedME = theView:getFocus()
+    if not focusedME or focusedME == fctEditor then return end
+
+    local index = getMEindex(focusedME)
+    local maxIterations = 10 -- prevent infinite loops
+    for _ = 1, maxIterations do
+        local y = focusedME.y
+        local h = focusedME.h
+        local y0 = fctEditor.y
+
+        if y < 0 and ioffset < index then
+            ioffset = ioffset + 1
+            reposME()
+        elseif y + h > y0 and ioffset > index then
+            ioffset = ioffset - 1
+            reposME()
+        else
+            break
+        end
+    end
+end
+
+-- When a history editor resizes, lay out paired entries side-by-side
+function resizeMEpar(editor, w, h)
+    local pare = getParME(editor)
+    if pare then
+        resizeMElim(editor, w, h, pare.w + (pare.dx1 or 0) * 2)
+    else
+        resizeME(editor, w, h)
+    end
+end
+
+-- Generic resize for any MathEditor
+function resizeME(editor, w, h)
+    if not editor then return end
+    resizeMElim(editor, w, h, scrWidth / 2)
+end
+
+-- Internal workhorse for resizing (limits width, then calls reposME)
+function resizeMElim(editor, w, h, lim)
+    if not editor then return end
+    local met = getME(editor)
+    if met then
+        met.needw = w
+        met.needh = h
+        w = math.max(w, 0)
+        w = math.min(w, scrWidth - (met.dx1 or 0) * 2)
+        if met ~= fctEditor then
+            w = math.min(w, (scrWidth - lim) - 2 * (met.dx1 or 0) + 1)
+        end
+        h = math.max(h, strFullHeight + 8)
+        met:resize(w, h)
+        reposME()
+        theView:invalidate()
+    end
+    return editor
+end
+
+-- “Scroll” and reflow all history MathEditors on screen
+function reposME()
+    local totalh, beforeh, visih = 0, 0, 0
+
+    -- First, position the input editor at the bottom
+    fctEditor.y = scrHeight - fctEditor.h
+    theView:repos(fctEditor)
+
+    -- Update scrollbar to fill from input up
+    sbv:setVConstraints("justify", scrHeight - fctEditor.y + border)
+    theView:repos(sbv)
+
+    local y = fctEditor.y
+    local i0 = math.max(#histME1, #histME2)
+
+    for i = i0, 1, -1 do
+        local h1, h2 = 0, 0
+        if i <= #histME1 then h1 = math.max(h1, histME1[i].h) end
+        if i <= #histME2 then h2 = math.max(h2, histME2[i].h) end
+        local h = math.max(h1, h2)
+
+        local ry
+        if (i0 - i) >= ioffset then
+            if y >= 0 then
+                if y >= h + border then
+                    visih = visih + h + border
+                else
+                    visih = visih + y
+                end
+            end
+            y = y - h - border
+            ry = y
+            totalh = totalh + h + border
+        else
+            ry = scrHeight
+            beforeh = beforeh + h + border
+            totalh = totalh + h + border
+        end
+
+        -- Place the “expression” editor on the left
+        if i <= #histME1 then
+            histME1[i].y = ry
+            theView:repos(histME1[i])
+        end
+        -- Place its paired “result” editor on the right, vertically aligned
+        if i <= #histME2 then
+            histME2[i].y = ry + math.max(0, h1 - h2)
+            theView:repos(histME2[i])
+        end
+    end
+
+    if totalh == 0 then
+        sbv.pos = 0
+        sbv.siz = 100
+    else
+        sbv.pos = beforeh * 100 / totalh
+        sbv.siz = visih * 100 / totalh
+    end
+
+    theView:invalidate()
+end
+
+function initGUI()
+    showEditorsBorders = false
+    showHLines = true
+    -- local riscas = math.evalStr("iscas()")
+    -- if (riscas == "true") then iscas = true end
+    local id = math.eval("sslib\\getid()")
+    if id then caslib = id end
+    scrWidth = platform.window:width()
+    scrHeight = platform.window:height()
+    if scrWidth > 0 and scrHeight > 0 then
+        theView = View(platform.window)
+
+        -- Vertical scroll bar for history
+        sbv = VScrollBar(theView, 0, -1, 5, scrHeight + 1)
+        sbv:setHConstraints("right", 0)
+        theView:add(sbv)
+
+        -- Input editor at bottom (MathEditor)
+        fctEditor = MathEditor(theView, 2, border, scrWidth - 4 - sbv.w, 30, "")
+        fctEditor:setHConstraints("justify", 1)
+        fctEditor:setVConstraints("bottom", 1)
+        fctEditor.editor:setSizeChangeListener(function(editor, w, h)
+            return resizeME(editor, w, h)
+        end)
+        theView:add(fctEditor)
+        fctEditor.result = res
+        fctEditor.editor:setText("")
+        fctEditor:fixContent()
+
+        -- First-focus is input editor
+        theView:setFocus(fctEditor)
+        inited = true
+    end
+
+    toolpalette.enableCopy(true)
+    toolpalette.enablePaste(true)
+end
+
+function resizeGC(gc)
+	scrWidth = platform.window:width()
+	scrHeight = platform.window:height()
+	if not inited then
+		initGUI()
+	end
+	if inited then
+		initFontGC(gc)
+		strFullHeight = gc:getStringHeight("H")
+		strHeight = strFullHeight - 3
+		theView:resize()
+		reposME()
+		theView:invalidate()
+	end
+end
+
+function on.resize()
+	platform.withGC(resizeGC)
+end
+
+forcefocus = true
+
+function on.activate()
+	forcefocus = true
+end
+
+dispinfos = true
+
+function on.paint(gc)
+	if not inited then
+		initGUI()
+		initFontGC(gc)
+		strFullHeight = gc:getStringHeight("H")
+		strHeight = strFullHeight - 3
+	end
+	if inited then
+		-- Removed display of "Last: ..." result at the top
+		local obj = theView:getFocus()
+		initFontGC(gc)
+		if not obj then theView:setFocus(fctEditor) end
+		if (forcefocus) then
+			if obj == fctEditor then
+				fctEditor.editor:setFocus(true)
+				if fctEditor.editor:hasFocus() then forcefocus = false end
+			else
+				forcefocus = false
+			end
+		end
+		if dispinfos then
+			-- Draw status box: green if OK, red if error, always visible top left
+			local engineStatus = "LuaCAS Engine: Enabled"
+			local statusColor = {0, 127, 0} -- green
+			if _G.luaCASerror then
+				engineStatus = "LuaCAS Engine: NONE"
+				statusColor = {200, 0, 0} -- red
+			end
+			local boxX, boxY = 8, 8
+			local boxPaddingX, boxPaddingY = 10, 3
+			local fontToUse = "sansserif"
+			local fontStyle = "b"
+			local fontSize = 11
+			gc:setFont(fontToUse, fontStyle, fontSize)
+			local textW = gc:getStringWidth(engineStatus)
+			local textH = gc:getStringHeight(engineStatus)
+			gc:setColorRGB(statusColor[1], statusColor[2], statusColor[3])
+			gc:fillRect(boxX, boxY, textW + boxPaddingX * 2, textH + boxPaddingY * 2)
+			gc:setColorRGB(255,255,255)
+			gc:drawString(engineStatus, boxX + boxPaddingX, boxY + boxPaddingY, "top")
+			-- restore font for rest of UI
+			gc:setFont(font, style, fsize)
+		end
+		-- Output string fallback for "main" view
+		if true then -- "main" view block
+			local output = fctEditor and fctEditor.result
+			-- local outputStr = output or ""
+			local outputStr = (output and output ~= "") and output or "(no output)"
+			-- If you want to draw the output somewhere, do so here.
+			gc:setColorRGB(0, 127, 0)
+			gc:drawString(outputStr, 10, scrHeight - 25, "top")
+		end
+		theView:paint(gc)
+	end
+end
+
+font = "sansserif"
+style = "r"
+fsize = 9
+
+scrWidth = 0
+scrHeight = 0
+inited = false
+iscas = false
+caslib = "NONE"
+delim = " ≟ "
+border = 3
+
+strHeight = 0
+strFullHeight = 0
+
+
+
+-- Initialize empty history tables
+histME1 = {}
+histME2 = {}
+
+
+function addME(expr, res)
+	mee = MathEditor(theView, border, border, 50, 30, "")
+	mee.readOnly = true
+	table.insert(histME1, mee)
+	mee:setHConstraints("left", border)
+	mee.editor:setSizeChangeListener(function(editor, w, h)
+		return resizeME(editor, w + 3, h)
+	end)
+	mee.editor:setExpression("\\0el {" .. expr .. "}", 0)
+	mee:fixCursor()
+	mee.editor:setReadOnly(true)
+	theView:add(mee)
+
+	mer = MathEditor(theView, border, border, 50, 30, "")
+    mer.result = true
+    mer.readOnly = true
+	table.insert(histME2, mer)
+	mer:setHConstraints("right", scrWidth - sbv.x + border)
+	mer.editor:setSizeChangeListener(function(editor, w, h)
+				return resizeMEpar(editor, w + border, h)
+	end)
+	mer.editor:setExpression("\\0el {" .. res .. "}", 0)
+	mer:fixCursor()
+	mer.editor:setReadOnly(true)
+	theView:add(mer)
+	reposME()
+
+-- Any unhandled errors will cause LuaCAS Engine status to go NONE (red)
 end
