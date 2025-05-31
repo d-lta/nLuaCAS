@@ -1,7 +1,7 @@
 # nLuaCAS - Symbolic Calculus Engine for TI-Nspire CX
 
 **nLuaCAS** is a symbolic math engine built in Lua for TI-Nspire calculators. Designed for educational purposes, it enables symbolic differentiation, integration, simplification, and solving — all without requiring Ndless.
-
+This is a WIP.
 > ⚠️ This tool is meant for learning and exploration. Do not use during assessments unless explicitly allowed.
 
 ## ✨ Features
