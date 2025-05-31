@@ -3,7 +3,7 @@ local input = ""
 local output = ""
 local editing = true
 local history = {}
-local view = "main" -- can be "main", "history", "about"
+local view = "main" -- can be "main", "history", "about", "help"
 
 local unpack = table.unpack or unpack
 local darkMode = false
@@ -29,6 +29,9 @@ local palette_dark = {
   text = {220,220,220}
 }
 
+-- Forward declarations for parser functions
+local parseExpr, parseTermChain, parseTerm, parseFactor
+
 -- Tokenize a mathematical expression into components
 function tokenize(expr)
   local tokens = {}
@@ -46,13 +49,19 @@ function tokenize(expr)
       end
       table.insert(tokens, num)
     elseif c:match("[%a]") then
-      local var = c
+      local ident = c
       i = i + 1
       while i <= #expr and expr:sub(i,i):match("[%a%d]") do
-        var = var .. expr:sub(i,i)
+        ident = ident .. expr:sub(i,i)
         i = i + 1
       end
-      table.insert(tokens, var)
+      if expr:sub(i,i) == "(" then
+        table.insert(tokens, ident)
+        table.insert(tokens, "(")
+        i = i + 1
+      else
+        table.insert(tokens, ident)
+      end
     elseif c:match("[%+%-%*/%^%(%)]") then
       table.insert(tokens, c)
       i = i + 1
@@ -73,57 +82,71 @@ function tokenize(expr)
   return tokens
 end
 
+
+-- Helper parsing functions for AST construction
+
+local function parseTerm(tokens, index)
+  local token = tokens[index]
+  if token == nil then
+    return nil, index
+  end
+  if tonumber(token) then
+    return { type = "number", value = tonumber(token) }, index + 1
+  elseif token:match("%a") then
+    if tokens[index+1] == "(" then
+      local args = {}
+      local funcName = token
+      local argNode, nextIndex = parseExpr(tokens, index + 2)
+      table.insert(args, argNode)
+      if tokens[nextIndex] ~= ")" then error("Expected ')' after function call") end
+      return { type = "func", name = funcName, args = args }, nextIndex + 1
+    else
+      return { type = "variable", name = token }, index + 1
+    end
+  elseif token == "(" then
+    local node, nextIndex = parseExpr(tokens, index + 1)
+    if tokens[nextIndex] ~= ")" then
+      error("Expected ')'")
+    end
+    return node, nextIndex + 1
+  end
+  error("Unexpected token: " .. token)
+end
+
+local function parseFactor(tokens, index)
+  local node, nextIndex = parseTerm(tokens, index)
+  if tokens[nextIndex] == "^" then
+    local right, finalIndex = parseFactor(tokens, nextIndex + 1)
+    return { type = "power", left = node, right = right }, finalIndex
+  end
+  return node, nextIndex
+end
+
+local function parseTermChain(tokens, index)
+  local node, nextIndex = parseFactor(tokens, index)
+  while tokens[nextIndex] == "*" or tokens[nextIndex] == "/" do
+    local op = tokens[nextIndex]
+    local right, newIndex = parseFactor(tokens, nextIndex + 1)
+    node = { type = op == "*" and "mul" or "div", left = node, right = right }
+    nextIndex = newIndex
+  end
+  return node, nextIndex
+end
+
+function parseExpr(tokens, index)
+  local node, nextIndex = parseTermChain(tokens, index)
+  while tokens[nextIndex] == "+" or tokens[nextIndex] == "-" do
+    local op = tokens[nextIndex]
+    local right, newIndex = parseTermChain(tokens, nextIndex + 1)
+    node = { type = op == "+" and "add" or "sub", left = node, right = right }
+    nextIndex = newIndex
+  end
+  return node, nextIndex
+end
+
 -- Very basic parser: Converts a flat list into a left-associative binary tree
 function buildAST(tokens)
-  local function parseTerm(index)
-    local token = tokens[index]
-    if not token then return nil, index end
-    if tonumber(token) then
-      return { type = "number", value = tonumber(token) }, index + 1
-    elseif token:match("%a") then
-      return { type = "variable", name = token }, index + 1
-    elseif token == "(" then
-      local node, nextIndex = parseExpr(index + 1)
-      if tokens[nextIndex] ~= ")" then
-        error("Expected ')'")
-      end
-      return node, nextIndex + 1
-    end
-    error("Unexpected token: " .. token)
-  end
-
-  local function parseFactor(index)
-    local node, nextIndex = parseTerm(index)
-    if tokens[nextIndex] == "^" then
-      local right, finalIndex = parseFactor(nextIndex + 1)
-      return { type = "power", left = node, right = right }, finalIndex
-    end
-    return node, nextIndex
-  end
-
-  local function parseTermChain(index)
-    local node, nextIndex = parseFactor(index)
-    while tokens[nextIndex] == "*" or tokens[nextIndex] == "/" do
-      local op = tokens[nextIndex]
-      local right, newIndex = parseFactor(nextIndex + 1)
-      node = { type = op == "*" and "mul" or "div", left = node, right = right }
-      nextIndex = newIndex
-    end
-    return node, nextIndex
-  end
-
-  local function parseExpr(index)
-    local node, nextIndex = parseTermChain(index)
-    while tokens[nextIndex] == "+" or tokens[nextIndex] == "-" do
-      local op = tokens[nextIndex]
-      local right, newIndex = parseTermChain(nextIndex + 1)
-      node = { type = op == "+" and "add" or "sub", left = node, right = right }
-      nextIndex = newIndex
-    end
-    return node, nextIndex
-  end
-
-  local ast, nextIndex = parseExpr(1)
+  local ast, nextIndex = parseExpr(tokens, 1)
   if nextIndex <= #tokens then
     return nil
   end
@@ -137,6 +160,9 @@ function astToString(ast)
   local t = ast.type
   if t == "number" then return tostring(ast.value) end
   if t == "variable" then return ast.name end
+  if t == "func" then
+    return ast.name .. "(" .. astToString(ast.args[1]) .. ")"
+  end
   if t == "power" then
     -- Parenthesize if needed for clarity
     return "("..astToString(ast.left)..")^("..astToString(ast.right)..")"
@@ -171,6 +197,9 @@ end
 function simplifyAST(ast)
   if not ast then return nil end
   local t = ast.type
+  if t == "func" then
+    return { type = "func", name = ast.name, args = {simplifyAST(ast.args[1])} }
+  end
   if t == "number" or t == "variable" then
     return ast
   end
@@ -187,6 +216,26 @@ function simplifyAST(ast)
       and node.right.left.type == "variable"
       and node.right.right.type == "number" then
       return node.left.value, node.right.left.name, node.right.right.value
+    -- Additional checks for combinations like x*x, x*x^2, x^2*x, x^2*x^3, x*x*x
+    elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "variable" and node.left.name == node.right.name then
+      -- x*x => x^2
+      return 1, node.left.name, 2
+    elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "power"
+      and node.right.left.type == "variable" and node.right.right.type == "number"
+      and node.left.name == node.right.left.name then
+      -- x*x^n => x^(n+1)
+      return 1, node.left.name, node.right.right.value + 1
+    elseif node.type == "mul" and node.left.type == "power" and node.right.type == "variable"
+      and node.left.left.type == "variable" and node.left.right.type == "number"
+      and node.left.left.name == node.right.name then
+      -- x^n*x => x^(n+1)
+      return 1, node.right.name, node.left.right.value + 1
+    elseif node.type == "mul" and node.left.type == "power" and node.right.type == "power"
+      and node.left.left.type == "variable" and node.left.right.type == "number"
+      and node.right.left.type == "variable" and node.right.right.type == "number"
+      and node.left.left.name == node.right.left.name then
+      -- x^n * x^m => x^(n+m)
+      return 1, node.left.left.name, node.left.right.value + node.right.right.value
     end
     return nil
   end
@@ -296,13 +345,22 @@ function simplify(expr)
   local ast = buildAST(tokens)
   if not ast then return "Can't simplify: invalid expression" end
   local simp = simplifyAST(ast)
-  return astToString(simp)
+  return simp and astToString(simp) or "Simplify failed"
 end
 
 -- Basic equation solver: solve(x^2 - 4 = 0)
 function solve(eqn)
+  eqn = eqn:gsub("%s+", "") -- Remove all whitespace
   local lhs, rhs = eqn:match("(.+)%=(.+)")
-  if not lhs or not rhs then return "Invalid equation" end
+  if not lhs or not rhs then
+    -- Try auto-convert to "=0" if not present
+    if not eqn:find("=") then
+      lhs = eqn
+      rhs = "0"
+    else
+      return "Invalid equation"
+    end
+  end
   local expr = "(" .. lhs .. ")-(" .. rhs .. ")"
   local tokens = tokenize(expr)
   local ast = buildAST(tokens)
@@ -625,7 +683,9 @@ function on.enterKey()
         else
           result = "Invalid AST format"
         end
+      -- Debug log for solve (optional for development)
       elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
+        print("Solving:", input)
         local eqn = input:match("solve%((.+)%)")
         result = eqn and solve(eqn) or "Invalid solve format"
       elseif input:sub(1,4) == "let " then
@@ -635,6 +695,9 @@ function on.enterKey()
       elseif input:sub(1,4) == "int(" and input:match(",") then
         local defint = input:match("int%((.+)%)")
         result = defint and definiteInt(defint) or "Invalid definite integral"
+      elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
+        local inner = input:match("simplify%((.+)%)")
+        result = inner and simplify(inner) or "Invalid simplify format"
       else
         result = simplify(input)
       end
@@ -659,6 +722,8 @@ function on.tabKey()
   elseif view == "history" then
     view = "about"
   elseif view == "about" then
+    view = "help"
+  elseif view == "help" then
     view = "main"
   end
   platform.window:invalidate()
@@ -852,6 +917,7 @@ function on.paint(gc)
     gc:setFont("sansserif", "i", 10)
     gc:setColorRGB(unpack(palette.text))
     gc:drawString("↵ ENTER = compute   |   TAB = switch view", 18, h - 40, "top")
+    gc:drawString("TAB = switch view (History, About, Help)", 18, h - 55, "top")
     gc:drawString("Supports: d/dx(expr), ∫(expr)dx, int(expr), ast(expr)", 18, h - 25, "top")
   elseif view == "history" then
     gc:setColorRGB(unpack(palette.text))
@@ -891,6 +957,26 @@ function on.paint(gc)
       gc:fillRect(boxX, boxY, 16, 16)
       gc:setColorRGB(90, 90, 90)
       gc:drawString("D", boxX+2, boxY-2, "top")
+    end
+  elseif view == "help" then
+    gc:setColorRGB(unpack(palette.text))
+    gc:setFont("sansserif", "b", 12)
+    gc:drawString("Help & Examples", 10, 40, "top")
+    gc:setFont("sansserif", "r", 10)
+    local y = 60
+    local examples = {
+      "d/dx(x^2 + 3x)            → 2x + 3",
+      "∫(x^2 + 1)dx              → 1/3x^3 + x + C",
+      "simplify(2x + 3x)         → 5x",
+      "solve(x^2 - 4 = 0)        → x₁ = 2, x₂ = -2",
+      "int(x^2, 0, 2)            → (4/3) - (0)",
+      "let f(x) = x^2 + 1        → Store a function",
+      "f(2)                      → 5",
+      "ast(x^2 + 2x + 1)         → Abstract Syntax Tree",
+    }
+    for _, ex in ipairs(examples) do
+      gc:drawString(ex, 10, y, "top")
+      y = y + 15
     end
   end
 end
