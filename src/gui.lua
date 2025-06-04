@@ -1,803 +1,12 @@
 
-
-
-
--- Additional CAS commands:
--- expand(expr)
--- subs(expr, var, val)
--- factor(expr)
--- gcd(a, b)
--- lcm(a, b)
--- trigid(expr)
-
-platform.apilevel = "2.4"
-
--- Global error flag for LuaCAS engine status
-_G.luaCASerror = false
-
--- CAS core routines
-
--- Tokenize a mathematical expression into components
-function tokenize(expr)
-  local tokens = {}
-  local i = 1
-  while i <= #expr do
-    local c = expr:sub(i,i)
-    if c:match("%s") then
-      i = i + 1
-    elseif c:match("[%d%.]") then
-      local num = c
-      i = i + 1
-      while i <= #expr and expr:sub(i,i):match("[%d%.]") do
-        num = num .. expr:sub(i,i)
-        i = i + 1
-      end
-      table.insert(tokens, num)
-    elseif c:match("[%a]") then
-      local ident = c
-      i = i + 1
-      while i <= #expr and expr:sub(i,i):match("[%a%d]") do
-        ident = ident .. expr:sub(i,i)
-        i = i + 1
-      end
-      if expr:sub(i,i) == "(" then
-        table.insert(tokens, ident)
-        table.insert(tokens, "(")
-        i = i + 1
-      else
-        table.insert(tokens, ident)
-      end
-    elseif c:match("[%+%-%*/%^%(%)]") then
-      table.insert(tokens, c)
-      i = i + 1
-    else
-      error("Unknown character: " .. c)
-    end
-  end
-
-  -- Insert * for implicit multiplication
-  local j = 2
-  while j <= #tokens do
-    if tokens[j-1]:match("[%d%a%)%]]") and tokens[j]:match("[%a%(]") then
-      table.insert(tokens, j, "*")
-      j = j + 1
-    end
-    j = j + 1
-  end
-  return tokens
+local parser = rawget(_G, "parser")
+if not parser or not parser.parse then
+  error("parser module or parser.parse not defined — ensure parser.lua is loaded before gui.lua")
 end
-
--- Parsing helpers
-local function parseTerm(tokens, index)
-  local token = tokens[index]
-  if token == nil then
-    return nil, index
-  end
-  if tonumber(token) then
-    return { type = "number", value = tonumber(token) }, index + 1
-  elseif token:match("%a") then
-    if tokens[index+1] == "(" then
-      local args = {}
-      local funcName = token
-      local argNode, nextIndex = parseExpr(tokens, index + 2)
-      table.insert(args, argNode)
-      if tokens[nextIndex] ~= ")" then error("Expected ')' after function call") end
-      return { type = "func", name = funcName, args = args }, nextIndex + 1
-    else
-      return { type = "variable", name = token }, index + 1
-    end
-  elseif token == "(" then
-    local node, nextIndex = parseExpr(tokens, index + 1)
-    if tokens[nextIndex] ~= ")" then
-      error("Expected ')'")
-    end
-    return node, nextIndex + 1
-  end
-  error("Unexpected token: " .. token)
-end
-
-local function parseFactor(tokens, index)
-  local node, nextIndex = parseTerm(tokens, index)
-  if tokens[nextIndex] == "^" then
-    local right, finalIndex = parseFactor(tokens, nextIndex + 1)
-    return { type = "power", left = node, right = right }, finalIndex
-  end
-  return node, nextIndex
-end
-
-local function parseTermChain(tokens, index)
-  local node, nextIndex = parseFactor(tokens, index)
-  while tokens[nextIndex] == "*" or tokens[nextIndex] == "/" do
-    local op = tokens[nextIndex]
-    local right, newIndex = parseFactor(tokens, nextIndex + 1)
-    node = { type = op == "*" and "mul" or "div", left = node, right = right }
-    nextIndex = newIndex
-  end
-  return node, nextIndex
-end
-
-function parseExpr(tokens, index)
-  local node, nextIndex = parseTermChain(tokens, index)
-  while tokens[nextIndex] == "+" or tokens[nextIndex] == "-" do
-    local op = tokens[nextIndex]
-    local right, newIndex = parseTermChain(tokens, nextIndex + 1)
-    node = { type = op == "+" and "add" or "sub", left = node, right = right }
-    nextIndex = newIndex
-  end
-  return node, nextIndex
-end
-
-function buildAST(tokens)
-  local ast, nextIndex = parseExpr(tokens, 1)
-  if nextIndex <= #tokens then
-    return nil
-  end
-  return ast
-end
-
-function astToString(ast)
-  if not ast then return "?" end
-  local t = ast.type
-  if t == "number" then return tostring(ast.value) end
-  if t == "variable" then return ast.name end
-  if t == "func" then
-    return ast.name .. "(" .. astToString(ast.args[1]) .. ")"
-  end
-  if t == "power" then
-    return "("..astToString(ast.left)..")^("..astToString(ast.right)..")"
-  end
-  if t == "mul" then
-    if ast.left.type == "number" and ast.right.type == "variable" then
-      if ast.left.value == 1 then return astToString(ast.right) end
-      if ast.left.value == 0 then return "0" end
-      return tostring(ast.left.value)..astToString(ast.right)
-    end
-    if ast.right.type == "number" and ast.left.type == "variable" then
-      if ast.right.value == 1 then return astToString(ast.left) end
-      if ast.right.value == 0 then return "0" end
-      return tostring(ast.right.value)..astToString(ast.left)
-    end
-    return astToString(ast.left).."*"..astToString(ast.right)
-  end
-  if t == "div" then
-    return astToString(ast.left).."/"..astToString(ast.right)
-  end
-  if t == "add" then
-    return astToString(ast.left).."+"..astToString(ast.right)
-  end
-  if t == "sub" then
-    return astToString(ast.left).."-"..astToString(ast.right)
-  end
-  return "?"
-end
-
-function simplifyAST(ast)
-  if not ast then return nil end
-  local t = ast.type
-  if t == "func" then
-    return { type = "func", name = ast.name, args = {simplifyAST(ast.args[1])} }
-  end
-  if t == "number" or t == "variable" then
-    return ast
-  end
-  local function extractCoeffVarPow(node)
-    if node.type == "variable" then
-      return 1, node.name, 1
-    elseif node.type == "mul" and node.left.type == "number" and node.right.type == "variable" then
-      return node.left.value, node.right.name, 1
-    elseif node.type == "power" and node.left.type == "variable" and node.right.type == "number" then
-      return 1, node.left.name, node.right.value
-    elseif node.type == "mul" and node.left.type == "number"
-      and node.right.type == "power"
-      and node.right.left.type == "variable"
-      and node.right.right.type == "number" then
-      return node.left.value, node.right.left.name, node.right.right.value
-    elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "variable" and node.left.name == node.right.name then
-      return 1, node.left.name, 2
-    elseif node.type == "mul" and node.left.type == "variable" and node.right.type == "power"
-      and node.right.left.type == "variable" and node.right.right.type == "number"
-      and node.left.name == node.right.left.name then
-      return 1, node.left.name, node.right.right.value + 1
-    elseif node.type == "mul" and node.left.type == "power" and node.right.type == "variable"
-      and node.left.left.type == "variable" and node.left.right.type == "number"
-      and node.left.left.name == node.right.name then
-      return 1, node.right.name, node.left.right.value + 1
-    elseif node.type == "mul" and node.left.type == "power" and node.right.type == "power"
-      and node.left.left.type == "variable" and node.left.right.type == "number"
-      and node.right.left.type == "variable" and node.right.right.type == "number"
-      and node.left.left.name == node.right.left.name then
-      return 1, node.left.left.name, node.left.right.value + node.right.right.value
-    end
-    return nil
-  end
-  local function combineLikeTerms(left, right, op)
-    local c1, v1, p1 = extractCoeffVarPow(left)
-    local c2, v2, p2 = extractCoeffVarPow(right)
-    if c1 and c2 and v1 == v2 and p1 == p2 then
-      local coeff = op == "add" and (c1 + c2) or (c1 - c2)
-      if coeff == 0 then
-        return {type="number", value=0}
-      elseif p1 == 1 then
-        return {type="mul", left={type="number", value=coeff}, right={type="variable", name=v1}}
-      else
-        return {
-          type="mul",
-          left={type="number", value=coeff},
-          right={type="power", left={type="variable", name=v1}, right={type="number", value=p1}}
-        }
-      end
-    end
-    return nil
-  end
-  if t == "add" or t == "sub" then
-    local left = simplifyAST(ast.left)
-    local right = simplifyAST(ast.right)
-    if left.type == "number" and right.type == "number" then
-      return {type="number", value=(t=="add" and left.value+right.value or left.value-right.value)}
-    end
-    local combined = combineLikeTerms(left, right, t)
-    if combined then return combined end
-    if left.type == "number" and left.value == 0 then return right end
-    if right.type == "number" and right.value == 0 then return left end
-    return {type=t, left=left, right=right}
-  end
-  if t == "mul" then
-    local left = simplifyAST(ast.left)
-    local right = simplifyAST(ast.right)
-    if left.type == "number" and right.type == "number" then
-      return {type="number", value=left.value * right.value}
-    end
-    if (left.type == "number" and left.value == 0) or (right.type == "number" and right.value == 0) then
-      return {type="number", value=0}
-    end
-    if left.type == "number" and left.value == 1 then return right end
-    if right.type == "number" and right.value == 1 then return left end
-    if left.type == "add" then
-      return simplifyAST({type="add",
-        left={type="mul", left=left.left, right=right},
-        right={type="mul", left=left.right, right=right}})
-    end
-    if right.type == "add" then
-      return simplifyAST({type="add",
-        left={type="mul", left=left, right=right.left},
-        right={type="mul", left=left, right=right.right}})
-    end
-    if left.type == "sub" then
-      return simplifyAST({type="sub",
-        left={type="mul", left=left.left, right=right},
-        right={type="mul", left=left.right, right=right}})
-    end
-    if right.type == "sub" then
-      return simplifyAST({type="sub",
-        left={type="mul", left=left, right=right.left},
-        right={type="mul", left=left, right=right.right}})
-    end
-    return {type="mul", left=left, right=right}
-  end
-  if t == "div" then
-    local left = simplifyAST(ast.left)
-    local right = simplifyAST(ast.right)
-    if left.type == "number" and right.type == "number" then
-      return {type="number", value=left.value / right.value}
-    end
-    if right.type == "number" and right.value == 1 then return left end
-    return {type="div", left=left, right=right}
-  end
-  if t == "power" then
-    local base = simplifyAST(ast.left)
-    local exp = simplifyAST(ast.right)
-    if base.type == "number" and exp.type == "number" then
-      return {type="number", value=base.value ^ exp.value}
-    end
-    if exp.type == "number" and exp.value == 1 then return base end
-    if exp.type == "number" and exp.value == 0 then return {type="number", value=1} end
-    if exp.type == "number" and exp.value == 2 then
-      return simplifyAST({type="mul", left=base, right=base})
-    end
-    return {type="power", left=base, right=exp}
-  end
-  return ast
-end
-
-function simplify(expr)
-  expr = expr:gsub("%s+", "")
-  local tokens = tokenize(expr)
-  local ast = buildAST(tokens)
-  if not ast then return "Can't simplify: invalid expression" end
-  local simp = simplifyAST(ast)
-  return simp and astToString(simp) or "Simplify failed"
-end
-
-function solve(eqn)
-  eqn = eqn:gsub("%s+", "")
-  local lhs, rhs = eqn:match("(.+)%=(.+)")
-  if not lhs or not rhs then
-    if not eqn:find("=") then
-      lhs = eqn
-      rhs = "0"
-    else
-      return "Invalid equation"
-    end
-  end
-  local expr = "(" .. lhs .. ")-(" .. rhs .. ")"
-  local tokens = tokenize(expr)
-  local ast = buildAST(tokens)
-  if not ast then return "Could not parse equation" end
-
-  local function collectPoly(node, coeffs)
-    coeffs = coeffs or { [0]=0, [1]=0, [2]=0, [3]=0 }
-    if node.type == "add" or node.type == "sub" then
-      local left = collectPoly(node.left, {})
-      local right = collectPoly(node.right, {})
-      for k,v in pairs(left) do coeffs[k] = (coeffs[k] or 0) + v end
-      for k,v in pairs(right) do
-        coeffs[k] = (coeffs[k] or 0) + (node.type == "add" and v or -v)
-      end
-    elseif node.type == "mul" then
-      if node.left.type == "number" and node.right.type == "variable" and node.right.name == "x" then
-        coeffs[1] = (coeffs[1] or 0) + node.left.value
-      elseif node.right.type == "number" and node.left.type == "variable" and node.left.name == "x" then
-        coeffs[1] = (coeffs[1] or 0) + node.right.value
-      elseif node.left.type == "number" and node.right.type == "power" and node.right.left.name == "x" then
-        coeffs[node.right.right.value] = (coeffs[node.right.right.value] or 0) + node.left.value
-      end
-    elseif node.type == "power" and node.left.name == "x" then
-      coeffs[node.right.value] = (coeffs[node.right.value] or 0) + 1
-    elseif node.type == "variable" and node.name == "x" then
-      coeffs[1] = (coeffs[1] or 0) + 1
-    elseif node.type == "number" then
-      coeffs[0] = (coeffs[0] or 0) + node.value
-    end
-    return coeffs
-  end
-
-  local coeffs = collectPoly(ast)
-  local a, b, c, d = coeffs[3] or 0, coeffs[2] or 0, coeffs[1] or 0, coeffs[0] or 0
-
-  if a == 0 and b == 0 and c ~= 0 then
-    return "x = " .. (-d/c)
-  elseif a == 0 and b ~= 0 then
-    local D = c^2 - 4*b*d
-    if D < 0 then return "No real roots" end
-    local r1 = (-c + math.sqrt(D)) / (2*b)
-    local r2 = (-c - math.sqrt(D)) / (2*b)
-    return string.format("x₁ = %.4g, x₂ = %.4g", r1, r2)
-  elseif a ~= 0 then
-    local p = (3*a*c - b^2) / (3*a^2)
-    local q = (2*b^3 - 9*a*b*c + 27*a^2*d) / (27*a^3)
-    local delta = (q^2)/4 + (p^3)/27
-    local roots = {}
-    if delta > 0 then
-      local sqrt_delta = math.sqrt(delta)
-      local u = ((-q)/2 + sqrt_delta)^(1/3)
-      local v = ((-q)/2 - sqrt_delta)^(1/3)
-      local root = u + v - b / (3*a)
-      table.insert(roots, root)
-      return string.format("x = %.4g (1 real root)", root)
-    elseif delta == 0 then
-      local u = (-q / 2)^(1/3)
-      local r1 = 2*u - b / (3*a)
-      local r2 = -u - b / (3*a)
-      return string.format("x₁ = %.4g, x₂ = %.4g", r1, r2)
-    else
-      local r = math.sqrt(-p^3 / 27)
-      local phi = math.acos(-q / (2 * r))
-      local t = 2 * math.sqrt(-p / 3)
-      for k = 0, 2 do
-        local angle = (phi + 2*math.pi*k)/3
-        local root = t * math.cos(angle) - b / (3*a)
-        table.insert(roots, root)
-      end
-      return string.format("x₁ = %.4g, x₂ = %.4g, x₃ = %.4g", roots[1], roots[2], roots[3])
-    end
-  end
-  return "Unsupported or no x found"
-end
-
--- Evaluate simple user-defined functions
-local memory = {}
-function define(expr)
-  local name, body = expr:match("let%s+(%w+)%s*=%s*(.+)")
-  if name and body then
-    memory[name] = body
-    return "Stored: " .. name .. " = " .. body
-  end
-  local fname, fbody = expr:match("let%s+(%w+%b())%s*=%s*(.+)")
-  if fname and fbody then
-    memory[fname] = fbody
-    return "Stored function: " .. fname
-  end
-  return "Invalid definition"
-end
-
-function evalFunction(expr)
-  if memory[expr] then
-    return simplify(memory[expr])
-  end
-  for k,v in pairs(memory) do
-    local name, arg = k:match("(%w+)%((%w+)%)")
-    local callarg = expr:match(name .. "%(([%d%.%-]+)%)")
-    if name and arg and callarg then
-      local body = v:gsub(arg, callarg)
-      return simplify(body)
-    end
-  end
-  return "Unknown variable or function"
-end
-
-function definiteInt(expr)
-  local e,a,b = expr:match("([^,]+),%s*([^,]+),%s*([^%)]+)")
-  if e and a and b then
-    local f = integrate(e)
-    local fa = evalFunction(f:gsub(" +C", ""):gsub("x", a))
-    local fb = evalFunction(f:gsub(" +C", ""):gsub("x", b))
-    return "(" .. fb .. ") - (" .. fa .. ")"
-  end
-  return "Invalid definite integral"
-end
-
-function derivative(expr)
-  expr = expr:gsub("%s+", "")
-  if expr:match("^∂/∂[yz]%(") then
-    local var = expr:sub(4, 4)
-    local subexpr = expr:match("∂/∂"..var.."%((.+)%)")
-    if subexpr then
-      return "Partial w.r.t " .. var .. ": " .. derivative(subexpr)
-    else
-      return "Invalid partial"
-    end
-  end
-  if expr:match("^%d+$") then return "0" end
-  if expr == "x" then return "1" end
-  if expr == "sin(x)" then return "cos(x)" end
-  if expr == "cos(x)" then return "-sin(x)" end
-  if expr == "tan(x)" then return "sec(x)^2" end
-  if expr == "sec(x)" then return "sec(x)tan(x)" end
-  if expr == "csc(x)" then return "-csc(x)cot(x)" end
-  if expr == "cot(x)" then return "-csc(x)^2" end
-  if expr == "e^x" then return "e^x" end
-  local a = expr:match("^(%d+)%^x$")
-  if a then return expr .. "*ln(" .. a .. ")" end
-  if expr == "ln(x)" then return "1/x" end
-  -- Additional function derivatives
-  if expr == "exp(x)" then return "exp(x)" end
-  if expr == "log(x)" then return "1/x" end
-  if expr == "sqrt(x)" then return "1/(2*sqrt(x))" end
-  if expr == "abs(x)" then return "x/abs(x)" end
-  if expr == "asin(x)" then return "1/sqrt(1-x^2)" end
-  if expr == "acos(x)" then return "-1/sqrt(1-x^2)" end
-  if expr == "atan(x)" then return "1/(1+x^2)" end
-  local inner, offset, exponent = expr:match("^%((%-?%d*%.?%d*)x([%+%-]%d+)%)%^([%d%.]+)$")
-  if inner and exponent then
-    local acoef = tonumber(inner) ~= 0 and tonumber(inner) or 1
-    local n = tonumber(exponent)
-    local new_exp = n - 1
-    local outer = tostring(n) .. "(" .. inner .. "x" .. offset .. ")^" .. new_exp
-    return outer .. "*" .. tostring(acoef)
-  end
-  -- x^n
-  local base, exponent2 = expr:match("^(x)%^([%d%.]+)$")
-  if base and exponent2 then
-    local new_exp2 = tonumber(exponent2) - 1
-    if new_exp2 == 1 then
-      return exponent2 .. "x"
-    elseif new_exp2 == 0 then
-      return exponent2
-    else
-      return exponent2 .. "x^" .. new_exp2
-    end
-  end
-  -- x^(n)
-  local baseP, exponentP = expr:match("^(x)%^%(([%d%.%-]+)%)$")
-  if baseP and exponentP then
-    local new_expP = tonumber(exponentP) - 1
-    if new_expP == 1 then
-      return exponentP .. "x"
-    elseif new_expP == 0 then
-      return exponentP
-    else
-      return exponentP .. "x^" .. new_expP
-    end
-  end
-  -- a*x^n
-  local coeff, power = expr:match("^(%-?%d*%.?%d*)x%^([%d%.]+)$")
-  if coeff and power then
-    if coeff == "" then coeff = "1" end
-    local new_coeff = tonumber(coeff) * tonumber(power)
-    local new_exp2 = tonumber(power) - 1
-    if new_exp2 == 1 then
-      return tostring(new_coeff) .. "x"
-    elseif new_exp2 == 0 then
-      return tostring(new_coeff)
-    else
-      return tostring(new_coeff) .. "x^" .. tostring(new_exp2)
-    end
-  end
-  -- a*x^(n)
-  local coeffP, powerP = expr:match("^(%-?%d*%.?%d*)x%^%(([%d%.%-]+)%)$")
-  if coeffP and powerP then
-    if coeffP == "" then coeffP = "1" end
-    local new_coeffP = tonumber(coeffP) * tonumber(powerP)
-    local new_expP = tonumber(powerP) - 1
-    if new_expP == 1 then
-      return tostring(new_coeffP) .. "x"
-    elseif new_expP == 0 then
-      return tostring(new_coeffP)
-    else
-      return tostring(new_coeffP) .. "x^" .. tostring(new_expP)
-    end
-  end
-  -- a*x
-  local coeff2 = expr:match("^(%-?%d*%.?%d*)x$")
-  if coeff2 then
-    if coeff2 == "" then coeff2 = "1" end
-    return tostring(coeff2)
-  end
-  -- sums: split at '+' outside parentheses
-  local function split_terms(expr, op)
-    local terms = {}
-    local level, last = 0, 1
-    for i = 1, #expr do
-      local c = expr:sub(i,i)
-      if c == "(" then level = level + 1 end
-      if c == ")" then level = level - 1 end
-      if c == op and level == 0 then
-        table.insert(terms, expr:sub(last, i-1))
-        last = i+1
-      end
-    end
-    if last <= #expr then
-      table.insert(terms, expr:sub(last))
-    end
-    return terms
-  end
-  -- sums
-  if expr:find("%+") then
-    local terms = split_terms(expr, "+")
-    local out = {}
-    for i, term in ipairs(terms) do
-      table.insert(out, derivative(term))
-    end
-    return table.concat(out, " + ")
-  end
-  -- differences
-  if expr:find("%-") then
-    local terms = split_terms(expr, "-")
-    local out = {}
-    for i, term in ipairs(terms) do
-      if i == 1 then
-        table.insert(out, derivative(term))
-      else
-        table.insert(out, "-("..derivative(term)..")")
-      end
-    end
-    return table.concat(out, " ")
-  end
-  -- product rule
-  local f, g = expr:match("^(.-)%*(.+)$")
-  if f and g then
-    return "("..derivative(f)..")*("..g..")+"..f.."*("..derivative(g)..")"
-  end
-  -- quotient rule
-  local num, denom = expr:match("^(.-)/(.-)$")
-  if num and denom then
-    return "(("..derivative(num)..")*("..denom..")-("..num..")*("..derivative(denom).."))/("..denom..")^2"
-  end
-  -- Chain rule for f(ax+b)
-  local fname, inner = expr:match("^(%a+)%(([%d%.%-]*x[%+%-]?[%d%.]*)%)$")
-  if fname and inner then
-      local inner_deriv = derivative(inner)
-      if fname == "sin" then
-          return "cos(" .. inner .. ")*(" .. inner_deriv .. ")"
-      elseif fname == "cos" then
-          return "-sin(" .. inner .. ")*(" .. inner_deriv .. ")"
-      elseif fname == "tan" then
-          return "sec(" .. inner .. ")^2*(" .. inner_deriv .. ")"
-      elseif fname == "exp" then
-          return "exp(" .. inner .. ")*(" .. inner_deriv .. ")"
-      elseif fname == "log" then
-          return "1/(" .. inner .. ")*(" .. inner_deriv .. ")"
-      elseif fname == "sqrt" then
-          return "1/(2*sqrt("..inner.."))*("..inner_deriv..")"
-      end
-  end
-  -- nth order
-  local order, var2, subexpr2 = expr:match("^d(%d+)/d([a-zA-Z])%^(%d+)%((.+)%)$")
-  if order and var2 and subexpr2 then
-    order = tonumber(order)
-    local result = subexpr2
-    for i = 1, order do
-      result = derivative(result)
-    end
-    return result
-  end
-  if expr:match("^d²/dx²%(.+%)$") then
-    local se = expr:match("^d²/dx²%((.+)%)$")
-    if se then return derivative(derivative(se)) end
-  end
-  return "d/dx not supported for: "..expr
-end
-
-function integrate(expr)
-  expr = expr:gsub("%s+", "")
-  if expr:match("^%d+$") then return expr .. "x + C" end
-  if expr == "x" then return "0.5x^2 + C" end
-  if expr == "sin(x)" then return "-cos(x) + C" end
-  if expr == "cos(x)" then return "sin(x) + C" end
-  if expr == "tan(x)" then return "-ln|cos(x)| + C" end
-  if expr == "sec(x)^2" then return "tan(x) + C" end
-  if expr == "csc(x)^2" then return "-cot(x) + C" end
-  if expr == "sec(x)tan(x)" then return "sec(x) + C" end
-  if expr == "csc(x)cot(x)" then return "-csc(x) + C" end
-  if expr == "e^x" then return "e^x + C" end
-  if expr == "ln(x)" then return "x*ln(x) - x + C" end
-  -- Additional function integrals
-  if expr == "exp(x)" then return "exp(x) + C" end
-  if expr == "log(x)" then return "x*log(x) - x + C" end
-  if expr == "sqrt(x)" then return "2/3*x^(3/2) + C" end
-  if expr == "1/x" then return "log(x) + C" end
-  if expr == "1/(1+x^2)" then return "atan(x) + C" end
-  if expr == "1/sqrt(1-x^2)" then return "asin(x) + C" end
-  if expr == "1/(1-x^2)" then return "atanh(x) + C" end
-  -- x^n
-  local base2, exponent3 = expr:match("^(x)%^([%d%.]+)$")
-  if base2 and exponent3 then
-    local new_exp3 = tonumber(exponent3) + 1
-    return "x^" .. new_exp3 .. "/" .. new_exp3 .. " + C"
-  end
-  -- x^(n)
-  local base2P, exponent3P = expr:match("^(x)%^%(([%d%.%-]+)%)$")
-  if base2P and exponent3P then
-    local new_exp3P = tonumber(exponent3P) + 1
-    return "x^" .. new_exp3P .. "/" .. new_exp3P .. " + C"
-  end
-  -- a*x^n
-  local coeff2, power2 = expr:match("^(%-?%d*%.?%d*)x%^([%d%.]+)$")
-  if coeff2 and power2 then
-    if coeff2 == "" then coeff2 = "1" end
-    local new_exp4 = tonumber(power2) + 1
-    local result2 = tonumber(coeff2) / new_exp4
-    return tostring(result2) .. "x^" .. tostring(new_exp4) .. " + C"
-  end
-  -- a*x^(n)
-  local coeff2P, power2P = expr:match("^(%-?%d*%.?%d*)x%^%(([%d%.%-]+)%)$")
-  if coeff2P and power2P then
-    if coeff2P == "" then coeff2P = "1" end
-    local new_exp4P = tonumber(power2P) + 1
-    local result2P = tonumber(coeff2P) / new_exp4P
-    return tostring(result2P) .. "x^" .. tostring(new_exp4P) .. " + C"
-  end
-  -- a*x
-  coeff2 = expr:match("^(%-?%d*%.?%d*)x$")
-  if coeff2 then
-    if coeff2 == "" then coeff2 = "1" end
-    return coeff2 .. "*0.5x^2 + C"
-  end
-  -- sums: split at '+' outside parentheses
-  local function split_terms(expr, op)
-    local terms = {}
-    local level, last = 0, 1
-    for i = 1, #expr do
-      local c = expr:sub(i,i)
-      if c == "(" then level = level + 1 end
-      if c == ")" then level = level - 1 end
-      if c == op and level == 0 then
-        table.insert(terms, expr:sub(last, i-1))
-        last = i+1
-      end
-    end
-    if last <= #expr then
-      table.insert(terms, expr:sub(last))
-    end
-    return terms
-  end
-  -- sums
-  if expr:find("%+") then
-    local terms = split_terms(expr, "+")
-    local out = {}
-    for i, term in ipairs(terms) do
-      table.insert(out, integrate(term))
-    end
-    return table.concat(out, " + ")
-  end
-  -- differences
-  if expr:find("%-") then
-    local terms = split_terms(expr, "-")
-    local out = {}
-    for i, term in ipairs(terms) do
-      if i == 1 then
-        table.insert(out, integrate(term))
-      else
-        table.insert(out, "-("..integrate(term)..")")
-      end
-    end
-    return table.concat(out, " ")
-  end
-  return "∫ not supported for: " .. expr
-
-end
-
--- Expand simple powers
-function expand(expr)
-    -- (x+a)^2 -> x^2+2ax+a^2
-    local a, b = expr:match("^%((x)%+([%d%.%-]+)%)%^2$")
-    if a and b then
-        return "x^2+" .. tostring(2*tonumber(b)) .. "x+" .. tostring(tonumber(b)*tonumber(b))
-    end
-    -- (a*x+b)^2
-    local c, d, e = expr:match("^%(([%d%.%-]*)x%+([%d%.%-]+)%)%^2$")
-    if c and d then
-        local cx = tonumber(c) ~= 0 and tonumber(c) or 1
-        local bx = tonumber(d)
-        return tostring(cx*cx).."x^2+"..tostring(2*cx*bx).."x+"..tostring(bx*bx)
-    end
-    -- (x+a)^3
-    local a2, b2 = expr:match("^%((x)%+([%d%.%-]+)%)%^3$")
-    if a2 and b2 then
-        local bnum = tonumber(b2)
-        return "x^3+"..tostring(3*bnum).."x^2+"..tostring(3*bnum^2).."x+"..tostring(bnum^3)
-    end
-    -- Default: cannot expand
-    return "Expand not supported for: " .. expr
-end
-
--- Substitute variable
-function subs(expr, var, val)
-    local replaced = expr:gsub(var, "(" .. val .. ")")
-    local success, res = pcall(function()
-        if replaced:match("^[%d%+%-%*/%^%.%(%)]+$") then
-            return load("return "..replaced)()
-        else
-            return replaced
-        end
-    end)
-    if success then
-        return tostring(res)
-    else
-        return replaced
-    end
-end
-
--- Polynomial factoring (quadratics only for now: ax^2+bx+c)
-function factor(expr)
-    local a, b, c = expr:match("^(%-?%d*)x%^2%+([%-?%d]*)x%+([%-?%d]*)$")
-    if a and b and c then
-        a = tonumber(a ~= "" and a or "1")
-        b = tonumber(b ~= "" and b or "0")
-        c = tonumber(c ~= "" and c or "0")
-        local D = b^2 - 4*a*c
-        if D < 0 then return "Irreducible over ℝ" end
-        local sqrtD = math.sqrt(D)
-        local r1 = (-b + sqrtD) / (2*a)
-        local r2 = (-b - sqrtD) / (2*a)
-        return string.format("%g*(x-%g)*(x-%g)", a, r1, r2)
-    end
-    return "Factoring not supported for: "..expr
-end
-
--- GCD and LCM of two integers
-function gcd(a, b)
-    a = tonumber(a) b = tonumber(b)
-    if not a or not b then return "GCD error" end
-    while b ~= 0 do a, b = b, a % b end
-    return tostring(math.abs(a))
-end
-function lcm(a, b)
-    a = tonumber(a) b = tonumber(b)
-    if not a or not b then return "LCM error" end
-    return tostring(math.floor(math.abs(a * b) / tonumber(gcd(a, b))))
-end
-
--- Trigonometric identities for sin, cos, tan double angle
-function trigid(expr)
-    if expr == "sin(2x)" then return "2sin(x)cos(x)" end
-    if expr == "cos(2x)" then return "cos(x)^2 - sin(x)^2" end
-    if expr == "tan(2x)" then return "2tan(x)/(1-tan(x)^2)" end
-    if expr == "sin^2(x)" then return "(1-cos(2x))/2" end
-    if expr == "cos^2(x)" then return "(1+cos(2x))/2" end
-    return "Trig identity not supported for: "..expr
-end
-
+local parse = parser.parse
+local simplify = rawget(_G, "simplify")
+-- Ensure compatibility with Lua 5.2+ where unpack is table.unpack
+unpack = unpack or table.unpack
 -- ETK View System (copied from S2.lua)
 defaultFocus = nil
 
@@ -1774,57 +983,88 @@ function on.enterKey()
   if not fctEditor or not fctEditor.getExpression then return end
 
   local input = fctEditor:getExpression()
+  -- Fix TI-style derivative notation like ((d)/(dx(x^2))) to diff(x^2, x)
+  input = input:gsub("%(%(d%)%)%/%(d([a-zA-Z])%((.-)%)%)%)", function(var, inner)
+    _G.__diff_var = var
+    return inner
+  end)
   if not input or input == "" then return end
+
+  -- Remove all whitespace from input
+  input = input:gsub("%s+", "")
 
   local result = ""
   _G.luaCASerror = false
   local success, err = pcall(function()
     if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
       local expr = input:match("d/d[xy]%((.+)%)")
-      result = expr and derivative(expr) or "Invalid format"
+      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
     elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
       local expr = input:match("∂/∂x%((.+)%)")
-      result = expr and derivative(expr) or "Invalid format"
+      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
     elseif input:match("^∂/∂[yz]%(.+%)$") then
-      result = derivative(input)
+      result = derivative(input, _G.__diff_var)
     elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
-      result = integrate(input:sub(4, -3))
+      result = integrate(parse(input:sub(4, -3)))
     elseif input:sub(1,4) == "int(" and input:sub(-1) == ")" then
       local expr = input:match("int%((.+)%)")
-      result = expr and integrate(expr) or "Invalid format"
+      result = expr and integrate(parse(expr)) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
     elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
       local eqn = input:match("solve%((.+)%)")
       if eqn and not eqn:find("=") then
         eqn = eqn .. "=0"
       end
-      result = eqn and solve(eqn) or "Invalid solve format"
-    elseif input:sub(1,4) == "let " then
+      result = eqn and solve(parse(eqn)) or "Invalid solve format"
+      if result == "Invalid solve format" then _G.luaCASerror = true end
+    elseif input:sub(1,4) == "let" then
       result = define(input)
     elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
         local inner = input:match("expand%((.+)%)")
-        result = inner and expand(inner) or "Invalid expand format"
+        result = inner and expand(parse(inner)) or "Invalid expand format"
+        if result == "Invalid expand format" then _G.luaCASerror = true end
     elseif input:sub(1,5) == "subs(" and input:sub(-1) == ")" then
-        local inner, var, val = input:match("subs%(([^,]+),%s*([^,]+),%s*([^%)]+)%)")
-        result = (inner and var and val) and subs(inner, var, val) or "Invalid subs format"
+        local inner, var, val = input:match("subs%(([^,]+),([^,]+),([^%)]+)%)")
+        result = (inner and var and val) and subs(parse(inner), var, val) or "Invalid subs format"
+        if result == "Invalid subs format" then _G.luaCASerror = true end
     elseif input:sub(1,7) == "factor(" and input:sub(-1) == ")" then
         local inner = input:match("factor%((.+)%)")
-        result = inner and factor(inner) or "Invalid factor format"
+        result = inner and factor(parse(inner)) or "Invalid factor format"
+        if result == "Invalid factor format" then _G.luaCASerror = true end
     elseif input:sub(1,4) == "gcd(" and input:sub(-1) == ")" then
-        local a, b = input:match("gcd%(([^,]+),%s*([^%)]+)%)")
-        result = (a and b) and gcd(a, b) or "Invalid gcd format"
+        local a, b = input:match("gcd%(([^,]+),([^%)]+)%)")
+        result = (a and b) and gcd(parse(a), parse(b)) or "Invalid gcd format"
+        if result == "Invalid gcd format" then _G.luaCASerror = true end
     elseif input:sub(1,4) == "lcm(" and input:sub(-1) == ")" then
-        local a, b = input:match("lcm%(([^,]+),%s*([^%)]+)%)")
-        result = (a and b) and lcm(a, b) or "Invalid lcm format"
+        local a, b = input:match("lcm%(([^,]+),([^%)]+)%)")
+        result = (a and b) and lcm(parse(a), parse(b)) or "Invalid lcm format"
+        if result == "Invalid lcm format" then _G.luaCASerror = true end
     elseif input:sub(1,7) == "trigid(" and input:sub(-1) == ")" then
         local inner = input:match("trigid%((.+)%)")
-        result = inner and trigid(inner) or "Invalid trigid format"
+        result = inner and trigid(parse(inner)) or "Invalid trigid format"
+        if result == "Invalid trigid format" then _G.luaCASerror = true end
     elseif input:match("%w+%(.+%)") then
-      result = evalFunction(input)
+      result = simplify.simplify(parse(input))
     elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
       local inner = input:match("simplify%((.+)%)")
-      result = inner and simplify(inner) or "Invalid simplify format"
+      result = inner and simplify.simplify(parse(inner)) or "Invalid simplify format"
+      if result == "Invalid simplify format" then _G.luaCASerror = true end
+    -- Fallback parser for diff(...) and integrate(...)
+    elseif input:match("^diff%(([^,]+),([^,%)]+)%)$") then
+      local a, b = input:match("^diff%(([^,]+),([^,%)]+)%)$")
+      result = (a and b) and derivative(parse(a), b) or "Invalid diff() format"
+      if result == "Invalid diff() format" then _G.luaCASerror = true end
+    elseif _G.__diff_var then
+      result = derivative(input, _G.__diff_var)
+      _G.__diff_var = nil
+    elseif input:match("^integrate%(([^,]+),([^,%)]+)%)$") then
+      local a, b = input:match("^integrate%(([^,]+),([^,%)]+)%)$")
+      result = (a and b) and integrate(parse(a), b) or "Invalid integrate() format"
+      if result == "Invalid integrate() format" then _G.luaCASerror = true end
     else
-      result = simplify(input)
+      result = simplify.simplify(parse(input))
     end
     if result == "" or not result then
       result = "No result. Internal CAS fallback used."
@@ -1836,7 +1076,8 @@ function on.enterKey()
   end
 
   -- Add to history display
-  addME(input, result)
+  local colorHint = (_G.luaCASerror and "error") or "normal"
+  addME(input, result, colorHint)
 
   -- Clear the input editor and ready for next input
   if fctEditor and fctEditor.editor then
@@ -1850,6 +1091,13 @@ function on.enterKey()
   end
 
   -- Optionally save last result globally if needed
+  if type(result) == "table" then
+    if _G.ast and _G.ast.tostring then
+      result = _G.ast.tostring(result)
+    else
+      result = "(unrenderable result)"
+    end
+  end
   res = result
 end
 
@@ -2216,7 +1464,7 @@ histME1 = {}
 histME2 = {}
 
 
-function addME(expr, res)
+function addME(expr, res, colorHint)
 	mee = MathEditor(theView, border, border, 50, 30, "")
 	mee.readOnly = true
 	table.insert(histME1, mee)
@@ -2224,6 +1472,12 @@ function addME(expr, res)
 	mee.editor:setSizeChangeListener(function(editor, w, h)
 		return resizeME(editor, w + 3, h)
 	end)
+	-- Set border color based on colorHint
+	if colorHint == "error" then
+		mee.editor:setBorderColor(0xFF0000) -- red
+	else
+		mee.editor:setBorderColor(0x000000)
+	end
 	mee.editor:setExpression("\\0el {" .. expr .. "}", 0)
 	mee:fixCursor()
 	mee.editor:setReadOnly(true)
@@ -2237,7 +1491,24 @@ function addME(expr, res)
 	mer.editor:setSizeChangeListener(function(editor, w, h)
 				return resizeMEpar(editor, w + border, h)
 	end)
-	mer.editor:setExpression("\\0el {" .. res .. "}", 0)
+	if colorHint == "error" then
+		mer.editor:setBorderColor(0xFF0000) -- red
+	else
+		mer.editor:setBorderColor(0x000000)
+	end
+    local displayRes = ""
+    if type(res) == "table" then
+      if _G.simplify and _G.simplify.pretty_print then
+        displayRes = _G.simplify.pretty_print(res)
+      elseif _G.ast and _G.ast.tostring then
+        displayRes = _G.ast.tostring(res)
+      else
+        displayRes = tostring(res)
+      end
+    else
+      displayRes = tostring(res)
+    end
+    mer.editor:setExpression("\\0el {" .. displayRes .. "}", 0)
 	mer:fixCursor()
 	mer.editor:setReadOnly(true)
 	theView:add(mer)

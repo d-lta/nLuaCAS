@@ -1,0 +1,5219 @@
+--[[ This file is auto-generated. Do not edit directly. ]]
+-- Begin src/ast.lua
+
+table.unpack = unpack
+
+-- Use simplify.pretty_print for all string conversion of ASTs
+local ok, simplify = pcall(require, "simplify")
+if ok and simplify and simplify.pretty_print then
+  function ast_tostring(ast)
+    return simplify.pretty_print(ast)
+  end
+  ast.tostring = ast_tostring
+end
+
+-- AST Debug Printer (recursive)
+function ast_debug_print(ast, indent)
+    indent = indent or ""
+    if type(ast) ~= "table" then
+        print(indent .. tostring(ast))
+        return
+    end
+    if ast.type then
+        local desc = ast.type
+        if ast.name then desc = desc .. " (" .. tostring(ast.name) .. ")" end
+        print(indent .. desc)
+        if ast.value ~= nil then print(indent .. "  value: " .. tostring(ast.value)) end
+        if ast.name ~= nil and ast.type ~= "variable" then print(indent .. "  name: " .. tostring(ast.name)) end
+        if ast.args then
+            print(indent .. "  args:")
+            for i, arg in ipairs(ast.args) do
+                ast_debug_print(arg, indent .. "    ")
+            end
+        end
+        -- Print left/right for binary nodes
+        if ast.left then
+            print(indent .. "  left:")
+            ast_debug_print(ast.left, indent .. "    ")
+        end
+        if ast.right then
+            print(indent .. "  right:")
+            ast_debug_print(ast.right, indent .. "    ")
+        end
+    else
+        for k, v in pairs(ast) do
+            print(indent .. tostring(k) .. ":")
+            ast_debug_print(v, indent .. "  ")
+        end
+    end
+end
+-- Node constructors (convenience)
+function ast_number(val) return { type = "number", value = val } end
+function ast_symbol(name) return { type = "variable", name = name } end
+function ast_func(name, args) return { type = "func", name = name, args = args or {} } end
+function ast_binop(op, left, right) return { type = op, left = left, right = right } end
+function ast_neg(val) return { type = "neg", value = val } end
+function ast_pow(base, exp) return { type = "pow", base = base, exp = exp } end
+function ast_raw(str) return { type = "raw", value = str } end
+
+-- Deep copy for ASTs
+function ast_deepcopy(obj)
+    if type(obj) ~= "table" then return obj end
+    local res = {}
+    for k, v in pairs(obj) do
+        res[k] = ast_deepcopy(v)
+    end
+    return res
+end
+
+-- Equality test for ASTs
+function ast_equal(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    for k, v in pairs(a) do
+        if not ast_equal(v, b[k]) then return false end
+    end
+    for k, v in pairs(b) do
+        if not ast_equal(v, a[k]) then return false end
+    end
+    return true
+end
+
+-- Traverse AST (depth-first, pre-order)
+function ast_traverse(ast, fn)
+    fn(ast)
+    if type(ast) == "table" then
+        if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+            for _, v in ipairs(ast.args) do
+                ast_traverse(v, fn)
+            end
+        else
+            for k, v in pairs(ast) do
+                if type(v) == "table" then ast_traverse(v, fn) end
+            end
+        end
+    end
+end
+
+-- Map AST (depth-first, post-order)
+function ast_map(ast, fn)
+    if type(ast) ~= "table" then return fn(ast) end
+    local mapped = {}
+    if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+        mapped.type = ast.type
+        mapped.args = {}
+        if ast.name then mapped.name = ast.name end
+        for i, v in ipairs(ast.args) do
+            mapped.args[i] = ast_map(v, fn)
+        end
+    else
+        for k, v in pairs(ast) do
+            mapped[k] = ast_map(v, fn)
+        end
+    end
+    return fn(mapped)
+end
+
+-- Substitute subtrees (replace all matching with new)
+function ast_substitute(ast, target, replacement)
+    if ast_equal(ast, target) then return ast_deepcopy(replacement) end
+    if type(ast) ~= "table" then return ast end
+    local res = {}
+    if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+        res.type = ast.type
+        if ast.name then res.name = ast.name end
+        res.args = {}
+        for i, v in ipairs(ast.args) do
+            res.args[i] = ast_substitute(v, target, replacement)
+        end
+    else
+        for k, v in pairs(ast) do
+            res[k] = ast_substitute(v, target, replacement)
+        end
+    end
+    return res
+end
+
+-- Collect all variables (returns set as table { ["x"]=true, ... })
+function ast_vars(ast, found)
+    found = found or {}
+    if type(ast) ~= "table" then return found end
+    if ast.type == "variable" then found[ast.name] = true end
+    if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+        for _, v in ipairs(ast.args) do
+            ast_vars(v, found)
+        end
+    else
+        for k, v in pairs(ast) do
+            ast_vars(v, found)
+        end
+    end
+    return found
+end
+
+-- Count number of nodes
+function ast_size(ast)
+    if type(ast) ~= "table" then return 1 end
+    local sum = 1
+    if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+        for _, v in ipairs(ast.args) do sum = sum + ast_size(v) end
+    else
+        for k, v in pairs(ast) do sum = sum + ast_size(v) end
+    end
+    return sum
+end
+
+-- Find depth of AST
+function ast_depth(ast)
+    if type(ast) ~= "table" then return 0 end
+    local maxd = 0
+    if ast.type == "add" or ast.type == "mul" or ast.type == "func" then
+        for _, v in ipairs(ast.args) do
+            local d = ast_depth(v)
+            if d > maxd then maxd = d end
+        end
+    else
+        for k, v in pairs(ast) do
+            local d = ast_depth(v)
+            if d > maxd then maxd = d end
+        end
+    end
+    return 1 + maxd
+end
+
+
+-- Original AST to string printer (for debugging)
+function ast_tostring_raw(ast)
+    if type(ast) ~= "table" then return tostring(ast) end
+    if ast.type == "number" then return tostring(ast.value) end
+    if ast.type == "variable" then return ast.name end
+    if ast.type == "func" then
+        local args = {}
+        for i, v in ipairs(ast.args) do args[i] = ast_tostring_raw(v) end
+        return ast.name .. "(" .. table.concat(args, ",") .. ")"
+    end
+    if ast.type == "neg" then
+        return "-(" .. ast_tostring_raw(ast.value) .. ")"
+    end
+    if ast.type == "pow" then
+        return "(" .. ast_tostring_raw(ast.base) .. ")^(" .. ast_tostring_raw(ast.exp) .. ")"
+    end
+    if ast.type == "add" then
+        local parts = {}
+        for i, v in ipairs(ast.args) do
+            parts[i] = ast_tostring_raw(v)
+        end
+        return "(" .. table.concat(parts, " + ") .. ")"
+    end
+    if ast.type == "sub" then
+        return "(" .. ast_tostring_raw(ast.left) .. ") - (" .. ast_tostring_raw(ast.right) .. ")"
+    end
+    if ast.type == "mul" then
+        local parts = {}
+        for i, v in ipairs(ast.args) do
+            parts[i] = ast_tostring_raw(v)
+        end
+        -- Nice form: 2x, x2 for two args, otherwise with *
+        if #parts == 2 then
+            local a, b = ast.args[1], ast.args[2]
+            if ast_is_number(a) and ast_is_variable(b) then
+                return tostring(a.value) .. parts[2]
+            elseif ast_is_variable(a) and ast_is_number(b) then
+                return parts[1] .. tostring(b.value)
+            end
+        end
+        return table.concat(parts, "*")
+    end
+    if ast.type == "div" then
+        return "(" .. ast_tostring_raw(ast.left) .. ")/(" .. ast_tostring_raw(ast.right) .. ")"
+    end
+    if ast.type == "raw" then
+        return "[RAW:" .. tostring(ast.value) .. "]"
+    end
+    -- fallback
+    local str = "{" .. (ast.type or "?")
+    for k, v in pairs(ast) do
+        if k ~= "type" then str = str .. "," .. k .. "=" .. ast_tostring_raw(v) end
+    end
+    return str .. "}"
+end
+
+-- AST node type test helpers
+function ast_is_number(node)
+    return type(node) == "table" and node.type == "number"
+end
+function ast_is_variable(node)
+    return type(node) == "table" and node.type == "variable"
+end
+function ast_is_func(node, fname)
+    return type(node) == "table" and node.type == "func" and (not fname or node.name == fname)
+end
+function ast_is_op(node, op)
+    return type(node) == "table" and node.type == op
+end
+
+-- Evaluate simple constant AST (only numbers & numeric operations)
+function ast_eval_numeric(ast, env)
+    env = env or {}
+    if ast.type == "number" then return ast.value end
+    if ast.type == "variable" then
+        return env[ast.name] or error("Unbound variable: " .. tostring(ast.name))
+    end
+    if ast.type == "func" then
+        local argv = {}
+        for i, v in ipairs(ast.args) do
+            argv[i] = ast_eval_numeric(v, env)
+        end
+        if math[ast.name] then
+            return math[ast.name](table.unpack(argv))
+        elseif ast.name == "ln" then
+            return math.log(argv[1])
+        elseif ast.name == "log" then
+            return math.log10(argv[1])
+        elseif ast.name == "gamma" then
+            local n = argv[1]
+            if n > 0 and math.floor(n) == n then
+                local factorial = 1
+                for i = 1, n - 1 do
+                    factorial = factorial * i
+                end
+                return factorial
+            elseif n == 0.5 then
+                return math.sqrt(math.pi)
+            else
+                error("Gamma function not implemented for value: " .. tostring(n))
+            end
+        else
+            error("Unknown function: " .. ast.name)
+        end
+    end
+    if ast.type == "add" then
+        local sum = 0
+        for _, v in ipairs(ast.args) do
+            sum = sum + ast_eval_numeric(v, env)
+        end
+        return sum
+    end
+    if ast.type == "sub" then
+        return ast_eval_numeric(ast.left, env) - ast_eval_numeric(ast.right, env)
+    end
+    if ast.type == "mul" then
+        local prod = 1
+        for _, v in ipairs(ast.args) do
+            prod = prod * ast_eval_numeric(v, env)
+        end
+        return prod
+    end
+    if ast.type == "div" then
+        return ast_eval_numeric(ast.left, env) / ast_eval_numeric(ast.right, env)
+    end
+    if ast.type == "pow" then
+        return ast_eval_numeric(ast.base, env) ^ ast_eval_numeric(ast.exp, env)
+    end
+    if ast.type == "neg" then
+        return -ast_eval_numeric(ast.value, env)
+    end
+    error("Unsupported node in ast_eval_numeric: " .. tostring(ast.type))
+end
+
+-- Pattern matcher for rules: returns bindings or nil
+function ast_match(pattern, ast, bindings)
+    bindings = bindings or {}
+    if type(pattern) ~= "table" then
+        if pattern == ast then return bindings else return nil end
+    end
+    if pattern.var then
+        if bindings[pattern.var] then
+            return ast_equal(bindings[pattern.var], ast) and bindings or nil
+        else
+            bindings[pattern.var] = ast
+            return bindings
+        end
+    end
+    if type(ast) ~= "table" then return nil end
+    if pattern.type and pattern.type ~= ast.type then return nil end
+    if (pattern.type == "add" or pattern.type == "mul" or pattern.type == "func") and pattern.args then
+        if #pattern.args ~= #ast.args then return nil end
+        for i = 1, #pattern.args do
+            local sub = ast_match(pattern.args[i], ast.args[i], bindings)
+            if not sub then return nil end
+            bindings = sub
+        end
+    else
+        for k, v in pairs(pattern) do
+            if k ~= "var" and k ~= "args" then
+                local sub = ast_match(v, ast[k], bindings)
+                if not sub then return nil end
+                bindings = sub
+            end
+        end
+    end
+    return bindings
+end
+
+-- Export all as ast.*
+ast = {
+    number = ast_number,
+    symbol = ast_symbol,
+    func = ast_func,
+    binop = ast_binop,
+    neg = ast_neg,
+    pow = ast_pow,
+    raw = ast_raw,
+
+    -- Shorthand binary operation constructors
+    add = function(...) return { type = "add", args = {...} } end,
+    sub = function(l, r) return ast_binop("sub", l, r) end,
+    mul = function(...) return { type = "mul", args = {...} } end,
+    div = function(l, r) return ast_binop("div", l, r) end,
+    pow = function(l, r) return ast_pow(l, r) end,
+    neg = ast_neg,
+
+    deepcopy = ast_deepcopy,
+    equal = ast_equal,
+    traverse = ast_traverse,
+    map = ast_map,
+    substitute = ast_substitute,
+    vars = ast_vars,
+    size = ast_size,
+    depth = ast_depth,
+    tostring = ast_tostring,
+
+    is_number = ast_is_number,
+    is_variable = ast_is_variable,
+    is_func = ast_is_func,
+    is_op = ast_is_op,
+
+    eval_numeric = ast_eval_numeric,
+    match = ast_match,
+    debug_print = ast_debug_print,
+}
+
+-- Utility: flatten additive trees to sorted list of terms
+function ast_flatten_add(node)
+    if not ast_is_op(node, "add") then return { node } end
+    local parts = {}
+    local function collect(n)
+        if ast_is_op(n, "add") then
+            for _, v in ipairs(n.args) do
+                collect(v)
+            end
+        else
+            table.insert(parts, n)
+        end
+    end
+    collect(node)
+    table.sort(parts, function(a, b) return ast_tostring(a) < ast_tostring(b) end)
+    return parts
+end
+
+-- Utility: flatten multiplicative trees to sorted list of factors
+function ast_flatten_mul(node)
+    if not ast_is_op(node, "mul") then return { node } end
+    local parts = {}
+    local function collect(n)
+        if ast_is_op(n, "mul") then
+            for _, v in ipairs(n.args) do
+                collect(v)
+            end
+        else
+            table.insert(parts, n)
+        end
+    end
+    collect(node)
+    table.sort(parts, function(a, b) return ast_tostring(a) < ast_tostring(b) end)
+    return parts
+end
+
+ast.flatten_add = ast_flatten_add
+ast.flatten_mul = ast_flatten_mul
+
+-- Generic AST node constructor
+function ast_node(typ, opts)
+    local node = { type = typ }
+    for k, v in pairs(opts or {}) do
+        node[k] = v
+    end
+    return node
+end
+ast.node = ast_node
+_G.ast_node = ast.node
+_G.ast = ast
+
+
+-- Make all AST nodes print pretty with print(ast)
+local ast_mt = {
+  __tostring = function(self)
+    if _G.ast_tostring then
+      return _G.ast_tostring(self)
+    elseif _G.simplify and _G.simplify.pretty_print then
+      return _G.simplify.pretty_print(self)
+    else
+      return "[AST]"
+    end
+  end
+}
+-- Patch constructors to set metatable for all AST nodes
+local function set_ast_mt(node)
+  if type(node) == "table" and node.type and getmetatable(node) ~= ast_mt then
+    setmetatable(node, ast_mt)
+    -- Recursively set for children
+    if node.args then
+      for _, v in ipairs(node.args) do set_ast_mt(v) end
+    end
+    if node.left then set_ast_mt(node.left) end
+    if node.right then set_ast_mt(node.right) end
+    if node.base then set_ast_mt(node.base) end
+    if node.exp then set_ast_mt(node.exp) end
+    if node.value and type(node.value) == "table" then set_ast_mt(node.value) end
+  end
+  return node
+end
+-- Wrap original node constructors
+local old_number, old_symbol, old_func, old_binop, old_neg, old_pow, old_raw = ast_number, ast_symbol, ast_func, ast_binop, ast_neg, ast_pow, ast_raw
+function ast_number(val) return set_ast_mt(old_number(val)) end
+function ast_symbol(name) return set_ast_mt(old_symbol(name)) end
+function ast_func(name, args) return set_ast_mt(old_func(name, args)) end
+function ast_binop(op, l, r) return set_ast_mt(old_binop(op, l, r)) end
+function ast_neg(val) return set_ast_mt(old_neg(val)) end
+function ast_pow(base, exp) return set_ast_mt(old_pow(base, exp)) end
+function ast_raw(str) return set_ast_mt(old_raw(str)) end
+function ast_node(typ, opts)
+  local node = { type = typ }
+  for k, v in pairs(opts or {}) do
+    node[k] = v
+  end
+  return set_ast_mt(node)
+end
+ast.node = ast_node
+_G.ast_node = ast.node
+
+_G.ast_debug_print = ast_debug_print
+
+-- End src/ast.lua
+
+-- Begin src/parser.lua
+-- parser.lua: Tokenizer and AST builder for nLuaCAS
+--
+-- Maintains compatibility with previous API:
+--   tokenize(expr) => {tokens}
+--   buildAST(tokens) => ast
+--   parseExpr(tokens, idx) => ast, nextIdx
+--
+-- Improved: better error reporting, multi-digit numbers, support for functions, parentheses, implicit multiplication, and negative numbers.
+
+local parser = {}
+
+local function print_ast(ast, indent)
+  indent = indent or ""
+  if type(ast) ~= "table" then
+    print(indent .. tostring(ast))
+    return
+  end
+  if ast.type then
+    local desc = ast.type
+    if ast.name then desc = desc .. " (" .. tostring(ast.name) .. ")" end
+    print(indent .. desc)
+    if ast.value ~= nil then print(indent .. "  value: " .. tostring(ast.value)) end
+    if ast.name ~= nil and ast.type ~= "variable" then print(indent .. "  name: " .. tostring(ast.name)) end
+    if ast.args then
+      print(indent .. "  args:")
+      for i, arg in ipairs(ast.args) do
+        print_ast(arg, indent .. "    ")
+      end
+    end
+    if ast.base then
+      print(indent .. "  base:")
+      print_ast(ast.base, indent .. "    ")
+    end
+    if ast.exp then
+      print(indent .. "  exp:")
+      print_ast(ast.exp, indent .. "    ")
+    end
+    if ast.left then
+      print(indent .. "  left:")
+      print_ast(ast.left, indent .. "    ")
+    end
+    if ast.right then
+      print(indent .. "  right:")
+      print_ast(ast.right, indent .. "    ")
+    end
+  else
+    for k, v in pairs(ast) do
+      print(indent .. tostring(k) .. ":")
+      print_ast(v, indent .. "  ")
+    end
+  end
+end
+parser.print_ast = print_ast
+_G.print_ast = print_ast
+
+-- Tokenizer: Converts input string to list of tokens
+do
+  local function is_space(c) return c:match('%s') end
+  local function is_digit(c) return c:match('%d') end
+  local function is_alpha(c) return c:match('%a') end
+
+  function parser.tokenize(expr)
+    local tokens = {}
+    local i = 1
+    while i <= #expr do
+      local c = expr:sub(i,i)
+      if is_space(c) then
+        i = i + 1
+      elseif is_digit(c) or (c == '.' and is_digit(expr:sub(i+1,i+1))) then
+        -- Number (possibly decimal)
+        local num = c
+        i = i + 1
+        while i <= #expr and (is_digit(expr:sub(i,i)) or expr:sub(i,i) == '.') do
+          num = num .. expr:sub(i,i)
+          i = i + 1
+        end
+        table.insert(tokens, {type="number", value=tonumber(num)})
+      elseif is_alpha(c) then
+        -- Identifier or function
+        local ident = c
+        i = i + 1
+        while i <= #expr and (is_alpha(expr:sub(i,i)) or is_digit(expr:sub(i,i))) do
+          ident = ident .. expr:sub(i,i)
+          i = i + 1
+        end
+        table.insert(tokens, {type="ident", value=ident})
+        -- Lookahead: if next non-space char is '(', do NOT insert implicit '*' here (handled below)
+        -- (No action needed here; implicit multiplication insertion logic is below and will be updated)
+      -- If a ',' is found (function argument separator), tokenize it
+      elseif c == ',' then
+        table.insert(tokens, {type=",", value=","})
+        i = i + 1
+      elseif c == '(' or c == ')' then
+        table.insert(tokens, {type=c})
+        i = i + 1
+      elseif c == '+' or c == '-' or c == '*' or c == '/' or c == '^' or c == '!' then
+        table.insert(tokens, {type="op", value=c})
+        i = i + 1
+      else
+        error('Unknown character in expression: ' .. c)
+      end
+    end
+    -- Insert '*' for implicit multiplication
+    local j = 2
+    while j <= #tokens do
+      local t1, t2 = tokens[j-1], tokens[j]
+      -- Only insert * between number or ')' and ident or '(' (not between ident and '(')
+      if (t1.type == 'number' or t1.type == ')' ) and
+         (t2.type == 'ident' or t2.type == '(') then
+        table.insert(tokens, j, {type="op", value="*"})
+        j = j + 1
+      end
+      j = j + 1
+    end
+    return tokens
+  end
+end
+
+-- Parser: Recursive descent for full expression grammar
+--   Supports precedence, unary minus, and function calls
+
+local function parse_primary(tokens, idx)
+  local tok = tokens[idx]
+  if not tok then return nil, idx end
+
+  local function wrap_factorial(node, i)
+    if tokens[i] and tokens[i].type == "op" and tokens[i].value == "!" then
+      return {
+        type = "func",
+        name = "factorial",
+        args = { node }
+      }, i + 1
+    end
+    return node, i
+  end
+
+  if tok.type == "number" then
+    return wrap_factorial({type="number", value=tok.value}, idx+1)
+  elseif tok.type == "ident" then
+    if tokens[idx+1] and tokens[idx+1].type == '(' then
+      -- Function call (ident followed by '(' always makes a function, not variable)
+      local args = {}
+      local i = idx + 2
+      if tokens[i] and tokens[i].type ~= ')' then
+        local arg, ni = parser.parseExpr(tokens, i)
+        table.insert(args, arg)
+        i = ni
+        while tokens[i] and tokens[i].type == ',' do
+          local arg2
+          arg2, i = parser.parseExpr(tokens, i+1)
+          table.insert(args, arg2)
+        end
+      end
+      assert(tokens[i] and tokens[i].type == ')', 'Expected ) after function call')
+      -- Try to immediately evaluate trig functions for numeric input
+      local fcall = {type="func", name=tok.value, args=args}
+      if _G.trig and _G.trig.eval_trig_func then
+        local trig_result = _G.trig.eval_trig_func(tok.value, args[1])
+        if trig_result then
+          return wrap_factorial(trig_result, i+1)
+        end
+      end
+      return wrap_factorial(fcall, i+1)
+    else
+      -- Only treat as variable if not followed by '('
+      return wrap_factorial({type="variable", name=tok.value}, idx+1)
+    end
+  elseif tok.type == '(' then
+    local node, ni = parser.parseExpr(tokens, idx+1)
+    assert(tokens[ni] and tokens[ni].type == ')', 'Expected )')
+    return wrap_factorial(node, ni+1)
+  elseif tok.type == "op" and tok.value == '-' then
+    -- Unary minus (ensure expression is parsed correctly)
+    local expr, ni = parser.parseExpr(tokens, idx+1)
+    return wrap_factorial({type="neg", value=expr}, ni)
+  else
+    error('Unexpected token at parse_primary: ' .. (tok.type or '?'))
+  end
+end
+
+local function parse_power(tokens, idx)
+  local left, i = parse_primary(tokens, idx)
+  while tokens[i] and tokens[i].type == "op" and tokens[i].value == '^' do
+    local right
+    right, i = parse_primary(tokens, i+1)
+    left = {type="pow", base=left, exp=right}
+  end
+  return left, i
+end
+
+local function parse_term(tokens, idx)
+  -- Parse the first factor
+  local factors = {}
+  local i = idx
+  local node, ni = parse_power(tokens, i)
+  table.insert(factors, node)
+  i = ni
+  while tokens[i] and tokens[i].type == "op" and (tokens[i].value == '*' or tokens[i].value == '/') do
+    local op = tokens[i].value
+    local right
+    right, i = parse_power(tokens, i+1)
+    if op == '*' then
+      table.insert(factors, right)
+    else
+      -- Division: treat as multiplication by reciprocal
+      table.insert(factors, {type="pow", base=right, exp={type="number", value=-1}})
+    end
+  end
+  if #factors == 1 then
+    return factors[1], i
+  else
+    return {type="mul", args=factors}, i
+  end
+end
+
+function parser.parseExpr(tokens, idx)
+  idx = idx or 1
+  -- Special case: expression starts with unary minus
+  if tokens[idx] and tokens[idx].type == "op" and tokens[idx].value == '-' then
+    local expr, ni = parser.parseExpr(tokens, idx + 1)
+    return {type = "neg", value = expr}, ni
+  end
+  local terms = {}
+  local signs = {}
+  local node, i = parse_term(tokens, idx)
+  table.insert(terms, node)
+  table.insert(signs, 1)
+  while tokens[i] and tokens[i].type == "op" and (tokens[i].value == '+' or tokens[i].value == '-') do
+    local op = tokens[i].value
+    local right
+    right, i = parse_term(tokens, i+1)
+    table.insert(terms, right)
+    table.insert(signs, op == '+' and 1 or -1)
+  end
+  -- Flatten into n-ary add, handling subtraction as add of negative
+  if #terms == 1 then
+    return terms[1], i
+  else
+    local args = {}
+    for j = 1, #terms do
+      if signs[j] == 1 then
+        table.insert(args, terms[j])
+      else
+        table.insert(args, {type="neg", value=terms[j]})
+      end
+    end
+    return {type="add", args=args}, i
+  end
+end
+
+function parser.buildAST(tokens)
+  local ast, idx = parser.parseExpr(tokens, 1)
+  if idx <= #tokens then
+    error('Parser did not consume all tokens. Next unparsed token: ' .. tostring(tokens[idx].type or "?"))
+  end
+  return ast
+end
+
+function parser.parse(expr)
+  local tokens = parser.tokenize(expr)
+  print("[DEBUG] parser.tokenize result:")
+  for _, t in ipairs(tokens) do
+    print("  type=" .. t.type .. (t.value and (", value="..tostring(t.value)) or ""))
+  end
+  local ast = parser.buildAST(tokens)
+  print("[DEBUG] parser.buildAST result (AST structure):")
+  parser.print_ast(ast)
+  print("[DEBUG] parser.parse returning AST:")
+  parser.print_ast(ast)
+  return ast
+end
+
+-- Global exposure
+_G.parser = parser
+_G.parse = parser.parse
+
+_G.parser = parser
+
+-- End src/parser.lua
+
+-- Begin src/simplify.lua
+--[[
+  Symbolic Expression Simplification Engine (CAS)
+  Standalone Lua module: no dependencies, all helpers and rules included.
+  Entrypoint: simplify.simplify(expr_ast)
+  AST node types: assumes standard 'number', 'variable', 'add', 'mul', 'pow', 'neg', 'func', etc.
+  Extensible: just add rules to the rule table or helper functions.
+  See comments for structure and extension points.
+--]]
+
+
+local simplify = {}
+
+local DEBUG = true
+local function dbgprint(...)
+  if DEBUG then print("[DEBUG]", ...) end
+end
+
+-- Rules table must be declared before any table.insert(rules, ...)
+local rules = {}
+
+local function deepcopy(expr)
+  if type(expr) ~= "table" then return expr end
+  local t = {}
+  for k,v in pairs(expr) do t[k] = deepcopy(v) end
+  return t
+end
+
+local function is_num(e) return e and e.type == "number" end
+local function is_var(e) return e and e.type == "variable" end
+local function is_add(e) return e and e.type == "add" end
+local function is_mul(e) return e and e.type == "mul" end
+local function is_pow(e) return e and e.type == "pow" end
+local function is_neg(e) return e and e.type == "neg" end
+local function is_func(e) return e and e.type == "func" end
+
+local function numval(e) return e.value end
+
+local function ast_eq(a, b)
+  if type(a) ~= type(b) then return false end
+  if type(a) ~= "table" then return a == b end
+  if a.type ~= b.type then return false end
+  -- Compare keys present in both
+  for k,v in pairs(a) do
+    if not ast_eq(v, b[k]) then return false end
+  end
+  for k,v in pairs(b) do
+    if not ast_eq(v, a[k]) then return false end
+  end
+  return true
+end
+
+local function flatten(node)
+  if node.type ~= "add" and node.type ~= "mul" then return node end
+  local args = {}
+  local function gather(n)
+    if n.type == node.type and n.args then
+      for _,a in ipairs(n.args) do gather(a) end
+    else
+      table.insert(args, n)
+    end
+  end
+  gather(node)
+  return {type=node.type, args=args}
+end
+
+local function serialize_for_sort(node)
+  if is_num(node) then return "N:" .. tostring(node.value)
+  elseif is_var(node) then return "V:" .. node.name
+  elseif is_add(node) then
+    local parts = {}
+    for _, arg in ipairs(node.args) do table.insert(parts, serialize_for_sort(arg)) end
+    table.sort(parts)
+    return "A:" .. table.concat(parts, ",")
+  elseif is_mul(node) then
+    local parts = {}
+    for _, arg in ipairs(node.args) do table.insert(parts, serialize_for_sort(arg)) end
+    table.sort(parts)
+    return "M:" .. table.concat(parts, ",")
+  elseif is_pow(node) then
+    return "P:" .. serialize_for_sort(node.base) .. "^" .. serialize_for_sort(node.exp)
+  elseif is_neg(node) then
+    return "Neg:" .. serialize_for_sort(node.arg)
+  elseif is_func(node) then
+    local parts = {}
+    for _, arg in ipairs(node.args) do table.insert(parts, serialize_for_sort(arg)) end
+    return "F:" .. node.name .. "(" .. table.concat(parts, ",") .. ")"
+  else
+    return "U:" .. tostring(node)
+  end
+end
+
+local function sort_args(node)
+  if node.type ~= "add" and node.type ~= "mul" then return node end
+  local args = {}
+  for _,a in ipairs(node.args) do table.insert(args, a) end
+  table.sort(args, function(a,b)
+    local sa = serialize_for_sort(a)
+    local sb = serialize_for_sort(b)
+    return sa < sb
+  end)
+  return {type=node.type, args=args}
+end
+
+-- Forward declaration for recursive_simplify to allow its use in canonicalize
+local recursive_simplify
+
+local function canonicalize(expr)
+  if type(expr) ~= "table" then return expr end
+  local e = deepcopy(expr)
+  if e.type == "add" or e.type == "mul" then
+    local new_args = {}
+    for i, a in ipairs(e.args) do new_args[i] = recursive_simplify(a) end
+    e.args = new_args
+    e = flatten(e)
+    e = sort_args(e)
+    return e
+  elseif e.type == "pow" then
+    e.base = canonicalize(e.base)
+    e.exp = canonicalize(e.exp)
+    return e
+  elseif e.type == "neg" then
+    e.arg = canonicalize(e.arg)
+    return e
+  elseif e.type == "func" then
+    local new_args = {}
+    for i,a in ipairs(e.args) do new_args[i] = canonicalize(a) end
+    e.args = new_args
+    return e
+  end
+  return e
+end
+
+local function occurs(var, expr)
+  if is_var(expr) and expr.name == var then return true end
+  if type(expr) ~= "table" then return false end
+  for k,v in pairs(expr) do
+    if occurs(var, v) then return true end
+  end
+  return false
+end
+
+local function copy_node(node, fields)
+  local t = {type=node.type}
+  for k,v in pairs(fields or {}) do t[k] = v end
+  return t
+end
+
+local function map_args(node, f)
+  if not node.args then return node end
+  local new_args = {}
+  for i,a in ipairs(node.args) do new_args[i] = f(a) end
+  return {type=node.type, args=new_args}
+end
+
+-- Node builders
+local function num(n) return {type="number", value=n} end
+local function var(x) return {type="variable", name=x} end
+local function add(args) return {type="add", args=args} end
+local function mul(args) return {type="mul", args=args} end
+local function pow(base, exp) return {type="pow", base=base, exp=exp} end
+local function neg(arg) return {type="neg", arg=arg} end
+local function func(name, args) return {type="func", name=name, args=args} end
+
+-- Helper Predicates
+local function is_integer(n) return math.floor(n) == n end
+local function is_zero(e) return is_num(e) and numval(e) == 0 end
+local function is_one(e) return is_num(e) and numval(e) == 1 end
+local function is_minus_one(e) return is_num(e) and numval(e) == -1 end
+-- Helpers from the second snippet
+local function is_positive(e) return is_num(e) and numval(e) > 0 end
+local function is_negative(e) return is_num(e) and numval(e) < 0 end
+local function is_even(e) return is_num(e) and is_integer(numval(e)) and numval(e) % 2 == 0 end
+local function is_odd(e) return is_num(e) and is_integer(numval(e)) and numval(e) % 2 == 1 end
+
+
+--[[
+  Rule Engine: Each rule is a function: rule(expr) -> new_expr or nil
+  The rules are applied recursively and iteratively until stable.
+  To add new rules, insert into the rules table.
+--]]
+
+
+-- Constants: for quick lookup
+local ZERO = num(0)
+local ONE = num(1)
+local MINUS_ONE = num(-1)
+-- Constants from the second snippet
+local TWO = num(2)
+local PI = num(math.pi)
+local E = num(math.e)
+
+
+-- 1. BASIC ARITHMETIC SIMPLIFICATION
+table.insert(rules, function(expr)
+  if is_add(expr) then
+    -- Fold numeric terms in addition
+    local sum = 0
+    local others = {}
+    for _,a in ipairs(expr.args) do
+      if is_num(a) then sum = sum + numval(a) else table.insert(others, a) end
+    end
+    if sum ~= 0 or #others == 0 then table.insert(others, 1, num(sum)) end
+    -- Remove leading zero if there are other terms
+    if #others > 1 and is_zero(others[1]) then table.remove(others, 1) end
+    if #others == 1 then return others[1] end
+    if #others ~= #expr.args or (is_num(expr.args[1]) and numval(expr.args[1]) ~= sum) then
+      return add(others)
+    end
+  elseif is_mul(expr) then
+    -- Fold numeric terms in multiplication
+    local prod = 1
+    local others = {}
+    for _,a in ipairs(expr.args) do
+      if is_num(a) then prod = prod * numval(a) else table.insert(others, a) end
+    end
+    if prod == 0 then return ZERO end
+    if prod ~= 1 or #others == 0 then table.insert(others, 1, num(prod)) end
+    -- Remove all ones if there are other terms
+    for i = #others, 1, -1 do
+      if is_one(others[i]) then table.remove(others, i) end
+    end
+    if #others == 0 then return ONE end
+    if #others == 1 then return others[1] end
+    if #others ~= #expr.args or (is_num(expr.args[1]) and numval(expr.args[1]) ~= prod) then
+      return mul(others)
+    end
+  elseif is_pow(expr) then
+    -- Enhanced pow simplification block
+    if is_pow(expr) then
+      if is_one(expr.exp) then return expr.base end
+      if is_zero(expr.exp) then return ONE end
+      if is_zero(expr.base) then return ZERO end
+      if is_one(expr.base) then return ONE end
+      if is_num(expr.base) and is_num(expr.exp) then
+        local b, e = numval(expr.base), numval(expr.exp)
+        if b > 0 or (b < 0 and is_integer(e)) then
+          return num(b ^ e)
+        end
+      end
+    end
+  end
+end)
+
+-- Simplify x^1 => x
+table.insert(rules, function(expr)
+  if is_pow(expr) and is_one(expr.exp) then
+    return expr.base
+  end
+end)
+
+-- Flatten nested adds/muls (associativity)
+table.insert(rules, function(expr)
+  if is_add(expr) or is_mul(expr) then
+    local flat = flatten(expr)
+    if #flat.args ~= #expr.args then return flat end
+  end
+end)
+
+-- Sort args (commutativity)
+table.insert(rules, function(expr)
+  if is_add(expr) or is_mul(expr) then
+    local sorted = sort_args(expr)
+    -- Compare by structure
+    for i=1,#expr.args do
+      if not ast_eq(expr.args[i], sorted.args[i]) then return sorted end
+    end
+  end
+end)
+
+table.insert(rules, function(expr)
+  if is_add(expr) then
+    local out = {}
+    for _,a in ipairs(expr.args) do if not is_zero(a) then table.insert(out,a) end end
+    if #out == 0 then return ZERO end
+    if #out == 1 then return out[1] end
+    if #out < #expr.args then return add(out) end
+  elseif is_mul(expr) then
+    local out = {}
+    for _,a in ipairs(expr.args) do
+      if is_zero(a) then return ZERO end
+      if not is_one(a) then table.insert(out,a) end
+    end
+    if #out == 0 then return ONE end
+    if #out == 1 then return out[1] end
+    if #out < #expr.args then return mul(out) end
+  end
+end)
+
+table.insert(rules, function(expr)
+  if is_neg(expr) then
+    if is_num(expr.arg) then return num(-numval(expr.arg)) end
+    if is_neg(expr.arg) then return expr.arg.arg end -- --a = a
+    -- -a + b = b - a, handled by add/mul rules
+  end
+end)
+
+-- Rewrite -a*b*c as -1 * a * b * c
+table.insert(rules, function(expr)
+  if is_neg(expr) and is_mul(expr.arg) then
+    local new_args = {num(-1)}
+    for _, a in ipairs(expr.arg.args) do
+      table.insert(new_args, a)
+    end
+    return mul(new_args)
+  end
+end)
+
+table.insert(rules, function(expr)
+  if is_add(expr) then
+    -- Group by non-numeric term
+    local coeffs = {}
+    local others = {}
+    for _,a in ipairs(expr.args) do
+      if is_mul(a) then
+        -- Look for numeric coefficient
+        local c, rest = nil, {}
+        for _,f in ipairs(a.args) do
+          if is_num(f) then c = (c or 1) * numval(f) else table.insert(rest, f) end
+        end
+        if #rest > 0 then
+          local key_parts = {} -- Use a table for complex keys
+          for _, r_term in ipairs(rest) do table.insert(key_parts, serialize_for_sort(r_term)) end
+          table.sort(key_parts)
+          local key = table.concat(key_parts, "*")
+          
+          coeffs[key] = coeffs[key] or {c=0, term=rest}
+          coeffs[key].c = coeffs[key].c + (c or 1)
+        else -- All terms in mul were numbers, should have been folded
+          table.insert(others, a)
+        end
+      elseif is_num(a) then
+        coeffs["#num"] = coeffs["#num"] or {c=0, term={}} -- term is not really applicable here
+        coeffs["#num"].c = coeffs["#num"].c + numval(a)
+      elseif is_var(a) then
+        local key = serialize_for_sort(a) -- Use serialize for consistency
+        coeffs[key] = coeffs[key] or {c=0, term={a}}
+        coeffs[key].c = coeffs[key].c + 1
+      else
+        table.insert(others, a)
+      end
+    end
+    local out = {}
+    local changed_from_coeffs = false
+    for k,info in pairs(coeffs) do
+      if k == "#num" then
+        if info.c ~= 0 then table.insert(out, num(info.c)) end
+        if info.c == 0 and #expr.args > 1 then changed_from_coeffs = true end -- A number became zero
+      else
+        if info.c ~= 0 then
+          if info.c == 1 then
+            if #info.term == 1 then table.insert(out, info.term[1])
+            else table.insert(out, mul(info.term)) end
+          else
+            local t_terms = deepcopy(info.term)
+            table.insert(t_terms, 1, num(info.c)) -- Coefficient first
+            table.insert(out, mul(t_terms))
+          end
+        else -- Coefficient became zero, term vanishes
+           changed_from_coeffs = true
+        end
+      end
+    end
+
+    for _,a in ipairs(others) do table.insert(out, a) end
+    
+    if #out == 0 then return ZERO end
+    if #out == 1 and #others == 0 and not (coeffs["#num"] and #expr.args == 1 and ast_eq(expr.args[1], out[1])) then -- Avoid infinite loop for single number
+        return out[1] 
+    end
+
+    -- Check if a meaningful change occurred or if the number of terms was reduced
+    if #out < #expr.args or changed_from_coeffs then
+        if #out == 0 then return ZERO end
+        if #out == 1 then return out[1] end
+        return add(out)
+    end
+  end
+end)
+
+-- Cancel additive inverses: a + (-a) => 0
+table.insert(rules, function(expr)
+  if is_add(expr) and #expr.args >= 2 then
+    local to_remove = {}
+    for i = 1, #expr.args do
+      for j = i + 1, #expr.args do
+        local a, b = expr.args[i], expr.args[j]
+        if is_neg(a) and ast_eq(a.arg, b) then
+          table.insert(to_remove, i)
+          table.insert(to_remove, j)
+        elseif is_neg(b) and ast_eq(b.arg, a) then
+          table.insert(to_remove, i)
+          table.insert(to_remove, j)
+        end
+      end
+    end
+    if #to_remove > 0 then
+      local keep = {}
+      local skip = {}
+      for _, idx in ipairs(to_remove) do skip[idx] = true end
+      for i = 1, #expr.args do
+        if not skip[i] then table.insert(keep, expr.args[i]) end
+      end
+      if #keep == 0 then return num(0) end
+      if #keep == 1 then return keep[1] end
+      return add(keep)
+    end
+  end
+end)
+
+
+-- Combining exponents: x^a * x^b = x^(a+b)
+table.insert(rules, function(expr)
+  if is_mul(expr) then
+    local exps = {} -- base_repr -> list of exponents
+    local others = {}
+    local has_combined = false
+
+    for _,a in ipairs(expr.args) do
+      local base_node, exp_node
+      if is_pow(a) then
+        base_node = a.base
+        exp_node = a.exp
+      elseif is_var(a) then
+        base_node = a
+        exp_node = ONE
+      else
+        table.insert(others, a)
+      end
+
+      if base_node then
+        local key = serialize_for_sort(base_node)
+        exps[key] = exps[key] or {base = base_node, exps_list = {}}
+        table.insert(exps[key].exps_list, exp_node)
+      end
+    end
+
+    local out = {}
+    for _,a in ipairs(others) do table.insert(out, a) end -- Add non-power/non-var terms first
+
+    for _,info in pairs(exps) do
+      local current_base = info.base
+      local current_exps_list = info.exps_list
+      local final_exp
+      if #current_exps_list == 1 then
+        final_exp = current_exps_list[1]
+      else
+        final_exp = simplify.simplify(add(current_exps_list)) -- Simplify the sum of exponents
+        has_combined = true -- Mark that we combined exponents
+      end
+
+      if is_zero(final_exp) then
+        table.insert(out, ONE) -- x^0 = 1
+        has_combined = true
+      elseif is_one(final_exp) then
+        table.insert(out, current_base) -- x^1 = x
+      else
+        table.insert(out, pow(current_base, final_exp))
+      end
+    end
+    
+    if not has_combined and #out == #expr.args then return nil end -- No change
+
+    -- Post-process 'out' to remove ONEs if other terms exist, and handle products of ONEs
+    local final_out = {}
+    local non_one_terms = 0
+    for _, term in ipairs(out) do
+        if not is_one(term) then
+            table.insert(final_out, term)
+            non_one_terms = non_one_terms + 1
+        end
+    end
+
+    if #final_out == 0 then return ONE end -- All terms were ONE or cancelled to ONE
+    if #final_out == 1 then return final_out[1] end
+    if #final_out < #expr.args or has_combined or non_one_terms < #out then -- Check if simplification occurred
+      return mul(final_out)
+    end
+  end
+end)
+
+
+-- Distributive law: a*(b + c) => a*b + a*c
+table.insert(rules, function(expr)
+  if is_mul(expr) then
+    for i, arg_outer in ipairs(expr.args) do
+      if is_add(arg_outer) then
+        local factor_terms = {} -- The terms not being distributed over
+        for j, other_arg in ipairs(expr.args) do
+          if i ~= j then table.insert(factor_terms, other_arg) end
+        end
+
+        if #factor_terms == 0 then return nil end -- e.g. just (b+c), no a to distribute
+
+        local expanded_terms = {}
+        for _, term_inner in ipairs(arg_outer.args) do
+          local current_product_args = {deepcopy(term_inner)}
+          for _, ft in ipairs(factor_terms) do
+            table.insert(current_product_args, deepcopy(ft))
+          end
+          table.insert(expanded_terms, mul(current_product_args))
+        end
+        return add(expanded_terms)
+      end
+    end
+  end
+end)
+
+
+-- Expand (a+b)^n for small integer n
+table.insert(rules, function(expr)
+    if is_pow(expr) and is_add(expr.base) and #expr.base.args == 2 and is_num(expr.exp) and is_integer(numval(expr.exp)) then
+        local n_val = numval(expr.exp)
+        if n_val > 1 and n_val <= 5 then -- Limit expansion to avoid blowup, e.g. (a+b)^2 to (a+b)^5
+            local n = n_val
+            local function binom(N, K) -- N choose K
+                if K < 0 or K > N then return 0 end
+                if K == 0 or K == N then return 1 end
+                if K > N / 2 then K = N - K end -- Symmetry
+                local res = 1
+                for i = 1, K do
+                    res = res * (N - i + 1) / i
+                end
+                return res
+            end
+
+            local terms = {}
+            local term_a, term_b -- Assuming base is a sum of two terms a+b
+            
+            -- Handle cases like (x-y)^n which is (x + (-y))^n
+            local base_args = expr.base.args
+            term_a = base_args[1]
+
+            -- Check if the second term is a negation or part of a subtraction
+            if is_neg(base_args[2]) then
+                term_b = base_args[2] -- Keep as neg node for a + (-b)
+            else
+                -- This part needs to correctly identify (a-b) which might be represented as add(a, mul(-1, b)) after some canonicalization
+                -- For now, let's assume a simple add({a, b}) or add({a, neg(b)})
+                term_b = base_args[2] 
+            end
+
+
+            for k = 0, n do
+                local coeff_val = binom(n, k)
+                if coeff_val ~= 0 then
+                    local coeff_node = num(coeff_val)
+                    
+                    local parts_of_term = {}
+                    if not is_one(coeff_node) or (n==0 and k==0) then -- Add coefficient unless it's 1 (and not for 1*1^0*b^0)
+                        table.insert(parts_of_term, coeff_node)
+                    end
+
+                    -- term_a^(n-k)
+                    if n - k > 0 then
+                        if n - k == 1 then
+                            table.insert(parts_of_term, deepcopy(term_a))
+                        else
+                            table.insert(parts_of_term, pow(deepcopy(term_a), num(n - k)))
+                        end
+                    elseif n-k == 0 and is_one(coeff_node) and k == n and n ~= 0 then -- case a^0 * b^n, don't add 1 if coeff is 1
+                         -- but if it's just (a+b)^0 = 1, the coeff_node=1 is already there
+                    elseif n-k == 0 and not (is_one(coeff_node) and #parts_of_term > 0) and #parts_of_term == 0 then
+                         -- if coefficient is not 1, or if it's the only term so far (e.g. for 1 * a^0 * b^0)
+                        -- table.insert(parts_of_term, ONE) -- a^0 = 1
+                    end
+
+                    -- term_b^k
+                    if k > 0 then
+                        if k == 1 then
+                            table.insert(parts_of_term, deepcopy(term_b))
+                        else
+                            table.insert(parts_of_term, pow(deepcopy(term_b), num(k)))
+                        end
+                    elseif k == 0 and is_one(coeff_node) and n-k == n and n ~=0 then
+                        -- case a^n * b^0, don't add 1
+                    elseif k == 0 and not (is_one(coeff_node) and #parts_of_term > 0) and #parts_of_term == 0 then
+                        -- table.insert(parts_of_term, ONE) -- b^0 = 1
+                    end
+                    
+                    if #parts_of_term == 0 then -- e.g. for (a+b)^0, only coefficient 1 remains
+                        if is_one(coeff_node) then table.insert(terms, ONE)
+                        else table.insert(terms, coeff_node) end -- Should not happen if binom(0,0)=1
+                    elseif #parts_of_term == 1 then
+                        table.insert(terms, parts_of_term[1])
+                    else
+                        table.insert(terms, mul(parts_of_term))
+                    end
+                end
+            end
+            if #terms == 0 then return ONE end -- e.g. (a+b)^0 results in one term: 1
+            if #terms == 1 then return terms[1] end
+            return add(terms)
+        end
+    end
+end)
+
+
+-- Expand (a-b)^2, (a+b)^2, (a-b)^3, etc (This rule seems redundant if the above handles it for n<=5)
+-- table.insert(rules, function(expr)
+--   if is_pow(expr) and is_add(expr.base) and is_num(expr.exp) and is_integer(numval(expr.exp)) and numval(expr.exp) > 1 then
+--     -- Already handled for n <= 5 above
+--     -- For larger n, skip (to avoid blowup)
+--   end
+-- end)
+
+-- x^a^b = x^(a*b)
+table.insert(rules, function(expr)
+  if is_pow(expr) and is_pow(expr.base) then
+    return pow(expr.base.base, mul{expr.base.exp, expr.exp})
+  end
+end)
+
+-- Logarithmic and exponential rules
+table.insert(rules, function(expr)
+  if is_func(expr) then
+    local n = expr.name
+    local a = expr.args[1] -- Assuming single argument for most of these
+    if n == "log" then
+      if not a then return expr end -- Should not happen with valid AST
+      -- log(1) = 0
+      if is_one(a) then return ZERO end
+      -- log(x^a) = a*log(x)
+      if is_pow(a) then return mul{deepcopy(a.exp), func("log",{deepcopy(a.base)})} end
+      -- log(e^x) = x (if base e is implied, or if E constant is used for base)
+      if is_pow(a) and ((is_var(a.base) and a.base.name == "e") or (is_num(a.base) and math.abs(numval(a.base) - math.exp(1)) < 1e-10)) then
+        return a.exp
+      end
+      if is_func(a) and a.name == "exp" then -- log(exp(x)) = x
+        return a.args[1]
+      end
+      -- log(a*b) = log(a) + log(b)
+      if is_mul(a) then
+        local logs = {}
+        for _,t in ipairs(a.args) do table.insert(logs, func("log",{deepcopy(t)})) end
+        return add(logs)
+      end
+       -- log(a/b) = log(a) - log(b)
+      if is_mul(a) and #a.args == 2 and is_pow(a.args[2]) and is_minus_one(a.args[2].exp) then
+        -- a is of form term1 * term2^-1
+        local term1 = a.args[1]
+        local term2_base = a.args[2].base
+        return add({ func("log", {deepcopy(term1)}), neg(func("log", {deepcopy(term2_base)})) })
+      end
+    elseif n == "exp" then
+      if not a then return expr end
+      -- exp(0) = 1
+      if is_zero(a) then return ONE end
+      -- exp(log(x)) = x
+      if is_func(a) and a.name == "log" then return a.args[1] end
+      -- exp(a+b) = exp(a)*exp(b)
+      if is_add(a) then
+        local exps = {}
+        for _,term in ipairs(a.args) do
+          table.insert(exps, func("exp", {deepcopy(term)}))
+        end
+        return mul(exps)
+      end
+      -- (e^a)^b = e^(a*b) -- exp(a*log(b)) = b^a; exp(b*log(a)) = a^b
+      -- This one is tricky: exp(X) where X = Y * log(Z)  => Z^Y
+      if is_mul(a) and #a.args == 2 then
+          local arg1, arg2 = a.args[1], a.args[2]
+          if is_func(arg2) and arg2.name == "log" then -- arg1 * log(arg2_inner)
+              return pow(deepcopy(arg2.args[1]), deepcopy(arg1))
+          elseif is_func(arg1) and arg1.name == "log" then -- log(arg1_inner) * arg2
+              return pow(deepcopy(arg1.args[1]), deepcopy(arg2))
+          end
+      end
+
+    elseif n == "sin" or n == "cos" then
+      if not a then return expr end
+      -- sin(0)=0, cos(0)=1
+      if is_zero(a) then return n == "sin" and ZERO or ONE end
+      -- sin(-x) = -sin(x), cos(-x) = cos(x)
+      if is_neg(a) then
+        if n == "sin" then return neg(func("sin", {deepcopy(a.arg)})) end
+        if n == "cos" then return func("cos", {deepcopy(a.arg)}) end
+      end
+      -- sin(n*pi) = 0 for integer n
+      if n == "sin" and is_mul(a) and #a.args == 2 then
+          local factor1, factor2 = a.args[1], a.args[2]
+          if is_num(factor1) and is_integer(numval(factor1)) and is_var(factor2) and factor2.name == "pi" then return ZERO end
+          if is_num(factor2) and is_integer(numval(factor2)) and is_var(factor1) and factor1.name == "pi" then return ZERO end
+          if is_num(factor1) and is_integer(numval(factor1)) and is_num(factor2) and math.abs(numval(factor2) - math.pi) < 1e-9 then return ZERO end
+          if is_num(factor2) and is_integer(numval(factor2)) and is_num(factor1) and math.abs(numval(factor1) - math.pi) < 1e-9 then return ZERO end
+      end
+      -- cos(n*pi) = (-1)^n for integer n
+      if n == "cos" and is_mul(a) and #a.args == 2 then
+          local factor_n, factor_pi
+          if is_num(a.args[1]) and is_integer(numval(a.args[1])) and ((is_var(a.args[2]) and a.args[2].name == "pi") or (is_num(a.args[2]) and math.abs(numval(a.args[2]) - math.pi) < 1e-9)) then
+              factor_n = a.args[1]
+          elseif is_num(a.args[2]) and is_integer(numval(a.args[2])) and ((is_var(a.args[1]) and a.args[1].name == "pi") or (is_num(a.args[1]) and math.abs(numval(a.args[1]) - math.pi) < 1e-9)) then
+              factor_n = a.args[2]
+          end
+          if factor_n then
+              if numval(factor_n) % 2 == 0 then return ONE else return MINUS_ONE end
+          end
+      end
+
+    elseif n == "tan" then
+      if not a then return expr end
+      -- tan(0)=0
+      if is_zero(a) then return ZERO end
+      -- tan(-x) = -tan(x)
+      if is_neg(a) then return neg(func("tan", {deepcopy(a.arg)})) end
+    end
+  end
+end)
+
+-- Trig identities (basic)
+table.insert(rules, function(expr)
+  -- sin^2(x) + cos^2(x) = 1
+  if is_add(expr) and #expr.args == 2 then
+    local term1, term2 = expr.args[1], expr.args[2]
+    local sin_arg, cos_arg
+
+    local function check_sq_func(term, func_name)
+        if is_pow(term) and is_num(term.exp) and numval(term.exp) == 2 and
+           is_func(term.base) and term.base.name == func_name and #term.base.args == 1 then
+            return term.base.args[1]
+        end
+        return nil
+    end
+
+    sin_arg = check_sq_func(term1, "sin")
+    cos_arg = check_sq_func(term2, "cos")
+    if sin_arg and cos_arg and ast_eq(sin_arg, cos_arg) then return ONE end
+
+    sin_arg = check_sq_func(term2, "sin")
+    cos_arg = check_sq_func(term1, "cos")
+    if sin_arg and cos_arg and ast_eq(sin_arg, cos_arg) then return ONE end
+  end
+
+  -- tan(x) = sin(x)/cos(x) => sin(x) * cos(x)^-1
+  if is_func(expr) and expr.name == "tan" and #expr.args == 1 then
+    local arg = expr.args[1]
+    return mul({ func("sin", {deepcopy(arg)}), pow(func("cos", {deepcopy(arg)}), MINUS_ONE) })
+  end
+  
+  -- 1 - cos^2(x) = sin^2(x)
+  if is_add(expr) and #expr.args == 2 then
+    local one_term, minus_cos_sq_term
+    if is_one(expr.args[1]) and is_neg(expr.args[2]) and is_pow(expr.args[2].arg) and is_num(expr.args[2].arg.exp) and numval(expr.args[2].arg.exp) == 2 and is_func(expr.args[2].arg.base) and expr.args[2].arg.base.name == "cos" then
+        return pow(func("sin", {deepcopy(expr.args[2].arg.base.args)}), TWO)
+    elseif is_one(expr.args[2]) and is_neg(expr.args[1]) and is_pow(expr.args[1].arg) and is_num(expr.args[1].arg.exp) and numval(expr.args[1].arg.exp) == 2 and is_func(expr.args[1].arg.base) and expr.args[1].arg.base.name == "cos" then
+        return pow(func("sin", {deepcopy(expr.args[1].arg.base.args)}), TWO)
+    end
+  end
+  -- 1 - sin^2(x) = cos^2(x)
+  if is_add(expr) and #expr.args == 2 then
+    local one_term, minus_sin_sq_term
+    if is_one(expr.args[1]) and is_neg(expr.args[2]) and is_pow(expr.args[2].arg) and is_num(expr.args[2].arg.exp) and numval(expr.args[2].arg.exp) == 2 and is_func(expr.args[2].arg.base) and expr.args[2].arg.base.name == "sin" then
+        return pow(func("cos", {deepcopy(expr.args[2].arg.base.args)}), TWO)
+    elseif is_one(expr.args[2]) and is_neg(expr.args[1]) and is_pow(expr.args[1].arg) and is_num(expr.args[1].arg.exp) and numval(expr.args[1].arg.exp) == 2 and is_func(expr.args[1].arg.base) and expr.args[1].arg.base.name == "sin" then
+        return pow(func("cos", {deepcopy(expr.args[1].arg.base.args)}), TWO)
+    end
+  end
+
+end)
+
+
+table.insert(rules, function(expr)
+  -- Multiplication of fractions: (a/b) * (c/d) = (a*c)/(b*d)
+  -- This is generally handled by canonicalization (flattening muls, combining powers)
+  -- e.g. a * b^-1 * c * d^-1  becomes a * c * b^-1 * d^-1 which is mul({a,c}, pow(mul({b,d}), MINUS_ONE))
+
+  -- Addition of fractions: a/b + c/d = (ad+bc)/bd
+  -- This rule can be complex and lead to expression blowup if not careful.
+  -- The existing rule is a bit basic, this is a placeholder for more advanced common denominator logic.
+  -- Current implementation tries to make a common denominator by just multiplying all denominators.
+  -- A more advanced version would find the LCM of denominators.
+  if is_add(expr) then
+    local terms_with_denominators = {}
+    local other_terms = {}
+    local has_fractions = false
+
+    for _, arg in ipairs(expr.args) do
+      if is_mul(arg) and #arg.args > 0 then
+        local num_parts = {}
+        local den_parts = {}
+        for _, factor in ipairs(arg.args) do
+          if is_pow(factor) and is_num(factor.exp) and numval(factor.exp) < 0 then
+            table.insert(den_parts, pow(deepcopy(factor.base), num(-numval(factor.exp))))
+            has_fractions = true
+          else
+            table.insert(num_parts, deepcopy(factor))
+          end
+        end
+        if #den_parts > 0 then
+          local numerator = (#num_parts == 0) and ONE or ((#num_parts == 1) and num_parts[1] or mul(num_parts))
+          local denominator = (#den_parts == 1) and den_parts[1] or mul(den_parts)
+          table.insert(terms_with_denominators, {n = numerator, d = denominator})
+        else
+          table.insert(other_terms, arg) -- Not a fraction of the form num * den^-1
+        end
+      elseif is_pow(arg) and is_num(arg.exp) and numval(arg.exp) < 0 then
+        table.insert(terms_with_denominators, {n = ONE, d = pow(deepcopy(arg.base), num(-numval(arg.exp)))})
+        has_fractions = true
+      else
+        table.insert(other_terms, arg)
+      end
+    end
+
+    if not has_fractions or #terms_with_denominators == 0 then return nil end
+    
+    -- If there are other terms not in fraction form, treat them as other_term / 1
+    for _, ot in ipairs(other_terms) do
+        table.insert(terms_with_denominators, {n = ot, d = ONE})
+    end
+    if #terms_with_denominators <= 1 and #other_terms == 0 then return nil end -- only one fraction, or no fractions
+
+    -- Find common denominator (simplified: product of all unique denominators)
+    -- More advanced: LCM. For now, product of simplified denominators.
+    local denominators_list = {}
+    for _, frac in ipairs(terms_with_denominators) do
+        table.insert(denominators_list, frac.d)
+    end
+    
+    -- This is a very naive common denominator.
+    -- A proper GCD/LCM for polynomials would be needed for better results.
+    -- For now, just multiply them if more than one distinct.
+    local common_denominator_terms = {}
+    local unique_denoms_str = {}
+    for _,d_node in ipairs(denominators_list) do
+        if not is_one(d_node) then
+            local s = serialize_for_sort(simplify.simplify(d_node)) -- Simplify and serialize
+            if not unique_denoms_str[s] then
+                table.insert(common_denominator_terms, simplify.simplify(d_node))
+                unique_denoms_str[s] = true
+            end
+        end
+    end
+    
+    local common_denominator
+    if #common_denominator_terms == 0 then
+        common_denominator = ONE
+    elseif #common_denominator_terms == 1 then
+        common_denominator = common_denominator_terms[1]
+    else
+        common_denominator = simplify.simplify(mul(common_denominator_terms))
+    end
+    
+    if is_one(common_denominator) and #other_terms == #expr.args then return nil end -- all were whole numbers
+
+
+    local new_numerators_sum_args = {}
+    for _, frac in ipairs(terms_with_denominators) do
+      local current_num = frac.n
+      local current_den = frac.d
+
+      if ast_eq(current_den, common_denominator) then
+        table.insert(new_numerators_sum_args, current_num)
+      else
+        -- multiplier = common_denominator / current_den
+        -- To avoid explicit division in AST if current_den is complex,
+        -- we are essentially doing: num * (common_den / current_den)
+        -- = num * common_den * current_den^-1
+        -- This needs careful simplification itself.
+        -- A simpler approach: find what to multiply num by.
+        -- If common_den = d1*d2*d3 and current_den = d1, multiplier is d2*d3.
+        -- This requires factorization of denominators. Too complex for now.
+        -- Naive: new_num_part = current_num * (common_denominator / current_den)
+        -- Let's use the simplify engine for (common_denominator * current_den^-1)
+        if is_one(current_den) then
+             table.insert(new_numerators_sum_args, simplify.simplify(mul({current_num, common_denominator})))
+        else
+            local den_inv = simplify.simplify(pow(current_den, MINUS_ONE))
+            local multiplier = simplify.simplify(mul({common_denominator, den_inv}))
+            table.insert(new_numerators_sum_args, simplify.simplify(mul({current_num, multiplier})))
+        end
+      end
+    end
+    
+    local sum_of_new_numerators = simplify.simplify(add(new_numerators_sum_args))
+
+    if is_zero(sum_of_new_numerators) then return ZERO end
+    if is_one(common_denominator) then return sum_of_new_numerators end
+
+    return mul({sum_of_new_numerators, pow(common_denominator, MINUS_ONE)})
+  end
+end)
+
+
+table.insert(rules, function(expr)
+  -- Simplify x^1 => x (already present, but good to have as a cleanup)
+  if is_pow(expr) and is_one(expr.exp) then
+    return expr.base
+  end
+  -- Simplify ...*1*... => ...
+  if is_mul(expr) then
+    local out = {}
+    local changed = false
+    for _,a in ipairs(expr.args) do
+      if not is_one(a) then table.insert(out, a)
+      else changed = true
+      end
+    end
+    if not changed then return nil end
+    if #out == 0 then return ONE end
+    if #out == 1 then return out[1] end
+    return mul(out)
+  end
+  -- Simplify add({n}) => n and mul({n}) => n (general cleanup)
+  if (is_add(expr) or is_mul(expr)) and #expr.args == 1 then
+    return expr.args[1]
+  end
+end)
+
+table.insert(rules, function(expr)
+  -- Clean up powers
+  if is_pow(expr) then
+    if is_one(expr.exp) then return expr.base end
+    if is_zero(expr.exp) and not is_zero(expr.base) then return ONE end -- 0^0 is undefined/contextual, often 1 in combinatorics
+    if is_zero(expr.base) and is_num(expr.exp) and numval(expr.exp) > 0 then return ZERO end -- 0^positive = 0
+    if is_one(expr.base) then return ONE end -- 1^x = 1
+  end
+  -- Clean up multiplication by zero or one
+  if is_mul(expr) then
+    local out = {}
+    local has_zero = false
+    local changed = false
+    for _, a in ipairs(expr.args) do
+      if is_zero(a) then has_zero = true; break end
+      if not is_one(a) then table.insert(out, a)
+      else changed = true -- A '1' was removed
+      end
+    end
+    if has_zero then return ZERO end
+    if not changed and #out == #expr.args then return nil end -- No change
+
+    if #out == 0 then return ONE end -- Product of ones
+    if #out == 1 then return out[1] end
+    return mul(out)
+  end
+  -- Clean up addition of zero
+  if is_add(expr) then
+    local out = {}
+    local changed = false
+    for _, a in ipairs(expr.args) do
+      if not is_zero(a) then table.insert(out, a)
+      else changed = true -- A '0' was removed
+      end
+    end
+    if not changed and #out == #expr.args then return nil end -- No change
+
+    if #out == 0 then return ZERO end -- Sum of zeros
+    if #out == 1 then return out[1] end
+    return add(out)
+  end
+end)
+
+
+local function factorial(n_val)
+  if not (n_val >= 0 and math.floor(n_val) == n_val) then
+    -- For non-integer or negative, factorial is often undefined or uses Gamma
+    -- This CAS might want to return gamma(n+1) or an error/unevaluated
+    return nil -- Or perhaps func("gamma", {add({num(n_val), ONE})}) if that's desired behavior
+  end
+  local result = 1
+  for i = 2, n_val do result = result * i end
+  return result
+end
+
+-- Approximate gamma using Lanczos approximation
+local function gamma_lanczos(z_val)
+    local p_coeffs = {
+        676.5203681218851, -1259.1392167224028, 771.32342877765313,
+        -176.61502916214059, 12.507343278686905,
+        -0.13857109526572012, 9.9843695780195716e-6,
+        1.5056327351493116e-7
+    }
+    if z_val < 0.5 then
+        if math.sin(math.pi * z_val) == 0 then return nil end -- Pole, undefined
+        local gamma_one_minus_z = gamma_lanczos(1 - z_val)
+        if not gamma_one_minus_z then return nil end
+        return math.pi / (math.sin(math.pi * z_val) * gamma_one_minus_z)
+    else
+        local z_adj = z_val - 1
+        local x = 0.99999999999980993
+        for i = 1, #p_coeffs do
+            x = x + p_coeffs[i] / (z_adj + i)
+        end
+        local t = z_adj + #p_coeffs - 0.5
+        return math.sqrt(2 * math.pi) * (t^(z_adj + 0.5)) * math.exp(-t) * x
+    end
+end
+
+
+-- Gamma and Factorial function rules
+table.insert(rules, function(expr)
+  if is_func(expr) then
+    if expr.name == "gamma" and #expr.args == 1 and is_num(expr.args[1]) then
+      local x_val = numval(expr.args[1])
+      if x_val > 0 then
+        if is_integer(x_val) then -- gamma(n) = (n-1)! for positive integer n
+          local fact_val = factorial(x_val - 1)
+          if fact_val then return num(fact_val) end
+        else -- Positive non-integer
+          local gamma_val = gamma_lanczos(x_val)
+          if gamma_val then return num(gamma_val) end
+        end
+      elseif x_val <= 0 and is_integer(x_val) then
+          return nil -- Undefined (pole) for 0 and negative integers
+      else -- Negative non-integer, use reflection formula if gamma_lanczos handles it or transformed
+          local gamma_val = gamma_lanczos(x_val)
+          if gamma_val then return num(gamma_val) end
+      end
+    elseif expr.name == "factorial" and expr.args and #expr.args == 1 then
+      local arg_node = expr.args[1]
+      if is_num(arg_node) then
+        local n_val = numval(arg_node)
+        if is_integer(n_val) and n_val >= 0 then
+          local fact_val = factorial(n_val)
+          if fact_val then return num(fact_val) end
+        else
+          -- factorial(non-integer) -> gamma(non-integer + 1)
+          local gamma_arg = simplify.simplify(add({ arg_node, ONE }))
+          return func("gamma", { gamma_arg })
+        end
+      -- factorial(x+1) is often kept as is, or gamma(x+2)
+      -- No specific symbolic transformation here beyond numerical evaluation or gamma conversion
+      end
+    end
+  end
+end)
+
+-- Symbolic simplification for factorial/gamma relations
+table.insert(rules, function(expr)
+    -- gamma(x+1) => x*gamma(x) or x! if x is suitable for factorial
+    if is_func(expr) and expr.name == "gamma" and #expr.args == 1 then
+        local arg = expr.args[1]
+        if is_add(arg) and #arg.args == 2 then
+            local term1, term2
+            if is_one(arg.args[2]) then -- x + 1 form
+                term1 = arg.args[1] 
+                term2 = arg.args[2]
+            elseif is_one(arg.args[1]) then -- 1 + x form
+                term1 = arg.args[2]
+                term2 = arg.args[1]
+            end
+            if term1 then
+                -- If term1 is an integer or variable for which factorial makes sense:
+                -- gamma(n+1) = n!
+                -- This transformation to factorial is often preferred
+                -- For now, let's do x*gamma(x)
+                -- return mul({deepcopy(term1), func("gamma", {deepcopy(term1)})})
+                -- The transformFactorial function already handles factorial -> gamma,
+                -- so perhaps we want gamma(x+1) -> x! if it simplifies things
+                 return func("factorial", {deepcopy(term1)}) -- This is done by transformFactorial's intent or a specific rule.
+                                                           -- Re-evaluate if this rule is beneficial here or creates loops.
+                                                           -- Given transformFactorial, this might be redundant or better placed.
+                                                           -- Let's keep it as is per user's original structure intent.
+            end
+        end
+    end
+
+    -- x! / (x-1)! = x
+    -- Representation: mul({ factorial(x), pow(factorial(add({x, num(-1)})), MINUS_ONE) })
+    if is_mul(expr) and #expr.args == 2 then
+        local fac_term, inv_fac_term
+        if is_func(expr.args[1]) and expr.args[1].name == "factorial" and
+           is_pow(expr.args[2]) and is_func(expr.args[2].base) and expr.args[2].base.name == "factorial" and
+           is_minus_one(expr.args[2].exp) then
+            fac_term = expr.args[1]
+            inv_fac_term = expr.args[2].base
+        elseif is_func(expr.args[2]) and expr.args[2].name == "factorial" and
+                 is_pow(expr.args[1]) and is_func(expr.args[1].base) and expr.args[1].base.name == "factorial" and
+                 is_minus_one(expr.args[1].exp) then
+            fac_term = expr.args[2]
+            inv_fac_term = expr.args[1].base
+        end
+
+        if fac_term and inv_fac_term then
+            local fac_arg = fac_term.args[1]
+            local inv_fac_arg = inv_fac_term.args[1]
+            -- Check if fac_arg is inv_fac_arg + 1
+            local diff_check = simplify.simplify(add({deepcopy(inv_fac_arg), ONE}))
+            if ast_eq(fac_arg, diff_check) then
+                return deepcopy(fac_arg) -- Returns x (if fac_arg was x, from x! / (x-1)!)
+            end
+        end
+    end
+
+    -- x! / x = (x-1)!
+    -- Representation: mul({ factorial(x), pow(x, MINUS_ONE) })
+    if is_mul(expr) and #expr.args == 2 then
+        local fac_node, var_inv_node
+        if is_func(expr.args[1]) and expr.args[1].name == "factorial" and is_pow(expr.args[2]) and is_minus_one(expr.args[2].exp) then
+            fac_node = expr.args[1]
+            var_inv_node = expr.args[2]
+        elseif is_func(expr.args[2]) and expr.args[2].name == "factorial" and is_pow(expr.args[1]) and is_minus_one(expr.args[1].exp) then
+            fac_node = expr.args[2]
+            var_inv_node = expr.args[1]
+        end
+
+        if fac_node and var_inv_node then
+            if ast_eq(fac_node.args[1], var_inv_node.base) then
+                return func("factorial", {simplify.simplify(add({deepcopy(fac_node.args[1]), MINUS_ONE}))})
+            end
+        end
+    end
+    
+    -- x! * x = (x+1)! -- This rule seems to be implemented inversely below, x! * x usually doesn't combine this way unless it's (x-1)! * x
+    -- More common is (x-1)! * x = x!
+    if is_mul(expr) and #expr.args == 2 then
+        local term1, term2 = expr.args[1], expr.args[2]
+        local fac_node, var_node
+        if is_func(term1) and term1.name == "factorial" then
+            fac_node = term1; var_node = term2;
+        elseif is_func(term2) and term2.name == "factorial" then
+            fac_node = term2; var_node = term1;
+        end
+
+        if fac_node and var_node then -- var_node must be a variable or expression
+            -- We want to match (X)! * (X+1)  -> (X+1)!
+            -- Or X! * (X+1) -> (X+1)!
+            local fac_arg_plus_one = simplify.simplify(add({deepcopy(fac_node.args[1]), ONE}))
+            if ast_eq(var_node, fac_arg_plus_one) then
+                 return func("factorial", {deepcopy(var_node)}) -- { (X+1)! }
+            end
+        end
+    end
+
+
+    -- x! / x! = 1
+    if is_mul(expr) and #expr.args == 2 and is_func(expr.args[1]) and expr.args[1].name == "factorial" and
+       is_pow(expr.args[2]) and is_func(expr.args[2].base) and expr.args[2].base.name == "factorial" and
+       is_minus_one(expr.args[2].exp) then
+        if ast_eq(expr.args[1].args[1], expr.args[2].base.args[1]) then return ONE end
+    end
+end)
+
+
+--[[
+------------------------------------------------------------------------------------
+-- PLACEHOLDER FOR ADDITIONAL RULES FROM THE (INCOMPLETE) SECOND SNIPPET:
+-- If the second snippet (Comprehensive CAS) had complete rule definitions like:
+-- table.insert(rules, function(expr) ... advanced rule ... end)
+-- They would be added here.
+-- For example, if the second snippet contained:
+-- table.insert(rules, function(expr)
+--   -- Example advanced rule for derivative, e.g. d/dx(sin(x)) = cos(x)
+--   if is_func(expr) and expr.name == "diff" and #expr.args == 2 then
+--     local func_to_diff = expr.args[1]
+--     local diff_var = expr.args[2]
+--     if is_func(func_to_diff) and func_to_diff.name == "sin" and ast_eq(func_to_diff.args[1], diff_var) then
+--       return func("cos", {deepcopy(diff_var)})
+--     end
+--   end
+-- end)
+-- That block of code would be inserted in this section.
+------------------------------------------------------------------------------------
+--]]
+
+-- Fallback: return the node unchanged (already part of the iterative loop logic)
+-- local function fallback(expr) return nil end
+
+--[[
+  Recursive and Iterative Simplification
+  - Recursively simplify children
+  - Apply all rules in order
+  - Repeat passes until stable (fixed point)
+--]]
+
+-- Define recursive_simplify before its first usage (e.g., in canonicalize or simplify.simplify)
+recursive_simplify = function(expr, recursion_depth)
+  dbgprint("recursive_simplify called for:", simplify.pretty_print(expr))
+  recursion_depth = recursion_depth or 0
+  if recursion_depth > 50 then -- Max recursion depth to prevent infinite loops
+    -- print("Warning: Max recursion depth reached for expression:", simplify.pretty_print(expr))
+    return expr 
+  end
+
+  if type(expr) ~= "table" then return expr end
+  
+  local e = deepcopy(expr) -- Work on a copy to allow changes
+
+  -- Recursively simplify children first
+  if e.type == "add" or e.type == "mul" or e.type == "func" then
+    if e.args then
+        local new_args = {}
+        for i,a in ipairs(e.args) do new_args[i] = recursive_simplify(a, recursion_depth + 1) end
+        e.args = new_args
+    end
+  elseif e.type == "pow" then
+    e.base = recursive_simplify(e.base, recursion_depth + 1)
+    e.exp = recursive_simplify(e.exp, recursion_depth + 1)
+  elseif e.type == "neg" then
+    e.arg = recursive_simplify(e.arg, recursion_depth + 1)
+  end
+
+  -- Apply rules iteratively until no more changes
+  local max_rule_passes = 50 -- Prevent runaway rule application
+  for pass = 1, max_rule_passes do
+    local changed_in_pass = false
+    e = canonicalize(e) -- Canonicalize before each rule pass
+    
+    for _, rule in ipairs(rules) do
+      local res = rule(e)
+      if res and not ast_eq(res, e) then
+        e = res
+        e = canonicalize(e) -- Canonicalize after a successful rule application
+        changed_in_pass = true
+        -- break -- Restart rule application from the beginning for the new expression form
+                -- Or continue applying other rules to the modified 'e'.
+                -- Restarting (break) is often safer to ensure rules see a stable state.
+      end
+    end
+    if not changed_in_pass then break end -- Stable state for this level
+    if pass == max_rule_passes then
+        -- print("Warning: Max rule passes reached for sub-expression:", simplify.pretty_print(expr))
+    end
+  end
+  
+  dbgprint("recursive_simplify result:", simplify.pretty_print(e))
+  return canonicalize(e) -- Final canonical form for this level
+end
+
+
+-- Transform factorial(n) to gamma(n+1), recursively for all subnodes.
+-- This should ideally run once before the main simplification loop,
+-- or be integrated as a rule if gamma is the preferred internal form.
+local function transformFactorialToGamma(expr)
+  if type(expr) ~= "table" then return expr end
+
+  local new_expr = deepcopy(expr) -- Operate on a copy
+
+  if new_expr.type == "func" and new_expr.name == "factorial" and new_expr.args and #new_expr.args == 1 then
+    local arg_transformed = transformFactorialToGamma(new_expr.args[1])
+    return {
+      type = "func",
+      name = "gamma",
+      args = {
+        simplify.simplify(add({ arg_transformed, ONE })) -- Simplify (arg + 1)
+      }
+    }
+  end
+
+  -- Recursively transform arguments/parts of the expression
+  if new_expr.args then
+    for i, arg_child in ipairs(new_expr.args) do
+      new_expr.args[i] = transformFactorialToGamma(arg_child)
+    end
+  elseif new_expr.arg then -- For unary operations like 'neg'
+    new_expr.arg = transformFactorialToGamma(new_expr.arg)
+  elseif new_expr.base and new_expr.exp then -- For 'pow'
+    new_expr.base = transformFactorialToGamma(new_expr.base)
+    new_expr.exp = transformFactorialToGamma(new_expr.exp)
+  end
+  
+  return new_expr
+end
+
+
+function simplify.simplify(expr_input)
+  dbgprint("Input to simplify:", simplify.pretty_print(expr_input))
+  local expr = deepcopy(expr_input) -- Ensure we don't modify the input AST
+  
+  -- Step 1: Transform all factorial(n) to gamma(n+1) as a preprocessing step
+  -- This makes gamma the canonical form for these types of functions.
+  expr = transformFactorialToGamma(expr)
+  expr = canonicalize(expr) -- Canonicalize after transformation
+
+  dbgprint("Starting simplification main loop. Initial expr:", simplify.pretty_print(expr))
+  local current_expr = expr
+  local max_iterations = 20 -- Max iterations for the main simplification loop
+  
+  for i = 1, max_iterations do
+    dbgprint("Iteration", i, "Current expr:", simplify.pretty_print(current_expr))
+    local simplified_once = recursive_simplify(current_expr)
+    local next_expr = canonicalize(simplified_once)
+    
+    if ast_eq(current_expr, next_expr) then
+      -- print("Simplification converged in " .. i .. " iterations.")
+      break -- Fixed point reached
+    end
+    current_expr = next_expr
+    dbgprint("After iteration", i, "Next expr:", simplify.pretty_print(current_expr))
+    if i == max_iterations then
+        -- print("Warning: Simplification reached max iterations (" .. max_iterations .. ").")
+    end
+  end
+  return current_expr
+end
+
+
+-- Export all utilities
+simplify.rules = rules
+simplify.deepcopy = deepcopy
+simplify.ast_eq = ast_eq
+simplify.is_num = is_num
+simplify.is_var = is_var
+simplify.is_add = is_add
+simplify.is_mul = is_mul
+simplify.is_pow = is_pow
+simplify.is_neg = is_neg
+simplify.is_func = is_func
+simplify.num = num
+simplify.var = var
+simplify.add = add
+simplify.mul = mul
+simplify.pow = pow
+simplify.neg = neg
+simplify.func = func
+simplify.flatten = flatten
+simplify.sort_args = sort_args
+simplify.occurs = occurs
+simplify.copy_node = copy_node
+simplify.map_args = map_args
+simplify.canonicalize = canonicalize
+
+_G.simplify = simplify -- For use in environment if not loaded as a module
+
+-- Rule from original first snippet (already present before your comment)
+-- x! * x^(-1) => (x - 1)! -- This is effectively gamma(x+1) * x^-1 => gamma(x)
+-- Given transformFactorialToGamma, this rule might be better expressed in terms of gamma,
+-- or ensured that factorial forms are simplified before transformation if this specific form is desired.
+table.insert(rules, function(expr)
+  if is_mul(expr) and #expr.args == 2 then
+    local term_a, term_b = expr.args[1], expr.args[2]
+    local fac_node, inv_node
+    
+    if is_func(term_a) and term_a.name == "factorial" and is_pow(term_b) and is_minus_one(term_b.exp) then
+        fac_node = term_a
+        inv_node = term_b
+    elseif is_func(term_b) and term_b.name == "factorial" and is_pow(term_a) and is_minus_one(term_a.exp) then
+        fac_node = term_b
+        inv_node = term_a
+    end
+
+    if fac_node and inv_node and ast_eq(fac_node.args[1], inv_node.base) then
+      -- fac_node.args[1] is 'x' from x!
+      -- We want (x-1)! which is factorial(add({x, num(-1)}))
+      return func("factorial", { add({ deepcopy(fac_node.args[1]), MINUS_ONE }) })
+    end
+  end
+end)
+
+table.insert(rules, function(expr)
+  -- factorial(x) * x^(-1) → factorial(x - 1)
+  if is_mul(expr) and #expr.args == 2 then
+    local a, b = expr.args[1], expr.args[2]
+    if is_func(a) and a.name == "factorial"
+        and is_pow(b)
+        and is_var(b.base)
+        and ast_eq(b.base, a.args[1])
+        and is_minus_one(b.exp) then
+      return func("factorial", { add{a.args[1], num(-1)} })
+    end
+  end
+end)
+table.insert(rules, function(expr)
+  -- x * x^(-1) → 1
+  if is_mul(expr) and #expr.args == 2 then
+    local a, b = expr.args[1], expr.args[2]
+    if is_var(a) and is_pow(b)
+       and ast_eq(a, b.base)
+       and is_minus_one(b.exp) then
+      return num(1)
+    end
+    if is_var(b) and is_pow(a)
+       and ast_eq(b, a.base)
+       and is_minus_one(a.exp) then
+      return num(1)
+    end
+  end
+end)
+-- Simplify expressions like x * x^(-1) or x / x to 1
+table.insert(rules, function(expr)
+  if is_mul(expr) and #expr.args == 2 then
+    local a, b = expr.args[1], expr.args[2]
+    local function is_inverse_pair(u, v)
+      return ast_eq(u, v.base) and is_pow(v) and is_minus_one(v.exp)
+    end
+    if is_inverse_pair(a, b) or is_inverse_pair(b, a) then
+      return num(1)
+    end
+  end
+end)
+-- Symbolic inverse simplification: x^(-1) * x → 1
+table.insert(rules, function(expr)
+  if is_mul(expr) and #expr.args == 2 then
+    local a, b = expr.args[1], expr.args[2]
+
+    local function is_inverse_pair(x, y)
+      return is_pow(x) and ast_eq(x.base, y) and is_num(x.exp) and numval(x.exp) == -1
+    end
+
+    if is_inverse_pair(a, b) or is_inverse_pair(b, a) then
+      return num(1)
+    end
+  end
+end)
+
+-- Pretty printer: convert AST to human-readable math string
+local function pretty_print_recursive(expr, parent_precedence)
+  parent_precedence = parent_precedence or 0
+  local current_precedence
+
+  -- Defensive clause: malformed or non-table node
+  if type(expr) ~= "table" or not expr.type then
+    return "<?>"
+  end
+  -- Defensive checks for malformed nodes
+  if expr.type == "pow" and (not expr.base or not expr.exp) then
+    return "<?bad pow>"
+  end
+  if expr.type == "mul" and not expr.args then
+    return "<?bad mul>"
+  end
+  if expr.type == "add" and not expr.args then
+    return "<?bad add>"
+  end
+  if expr.type == "variable" and not expr.name then
+    return "<?bad var>"
+  end
+  if expr.type == "number" and expr.value == nil then
+    return "<?bad num>"
+  end
+
+  if is_num(expr) then return tostring(expr.value) end
+  if is_var(expr) then return expr.name end
+  
+  if is_neg(expr) then
+    current_precedence = 4 -- Precedence of unary minus
+    local arg_str = pretty_print_recursive(expr.arg, current_precedence)
+    return "-" .. arg_str
+  end
+  
+  if is_add(expr) then
+    current_precedence = 1 -- Precedence of addition
+    local parts = {}
+    for i, arg in ipairs(expr.args) do
+      local s = pretty_print_recursive(arg, current_precedence)
+      if i > 1 and (type(s) == "string" and s:sub(1,1) ~= "-") then 
+        table.insert(parts, "+") 
+      end
+      table.insert(parts, s)
+    end
+    local res = table.concat(parts)
+    if current_precedence < parent_precedence then return "(" .. res .. ")" end
+    return res
+  end
+
+  
+  if is_mul(expr) then
+    current_precedence = 2 -- Precedence of multiplication
+    local parts = {}
+    for i, arg in ipairs(expr.args) do
+      local s = pretty_print_recursive(arg, current_precedence)
+      parts[i] = s
+    end
+    -- Try to print 2x instead of 2*x if the form is (number, variable)
+    if #parts == 2 and is_num(expr.args[1]) and is_var(expr.args[2]) then
+      local res = tostring(expr.args[1].value) .. parts[2]
+      if current_precedence < parent_precedence then return "(" .. res .. ")" end
+      return res
+    end
+    -- Or variable*number as x2
+    if #parts == 2 and is_var(expr.args[1]) and is_num(expr.args[2]) then
+      local res = parts[1] .. tostring(expr.args[2].value)
+      if current_precedence < parent_precedence then return "(" .. res .. ")" end
+      return res
+    end
+    -- Otherwise print with *
+    local res = table.concat(parts, "*")
+    if current_precedence < parent_precedence then return "(" .. res .. ")" end
+    return res
+  end
+  
+  if is_pow(expr) then
+    current_precedence = 3 -- Precedence of power
+    local base_str = pretty_print_recursive(expr.base, current_precedence)
+    local exp_str = pretty_print_recursive(expr.exp, 0) -- Exponent is usually fine without parens unless it's complex itself
+    -- if is_add(expr.base) or is_mul(expr.base) then base_str = "(" .. base_str .. ")" end -- Handled by precedence
+    -- if is_add(expr.exp) or is_mul(expr.exp) or is_pow(expr.exp) or is_neg(expr.exp) then exp_str = "(" .. exp_str .. ")" end -- Handled by precedence in recursive call
+    local res = base_str .. "^" .. exp_str
+    -- No, power is right-associative, so only add parens if parent_precedence is higher (e.g. (a^b)^c needs parens for a^b)
+    -- However, (a*b)^c needs parens for a*b. This is handled by recursive call's parent_precedence.
+    if current_precedence < parent_precedence then return "(" .. res .. ")" end -- This might be too aggressive
+    return res
+  end
+  
+  if is_func(expr) then
+    local args_str = {}
+    for _, a in ipairs(expr.args) do table.insert(args_str, pretty_print_recursive(a, 0)) end
+    return expr.name .. "(" .. table.concat(args_str, ", ") .. ")"
+  end
+  
+  return "<?>"
+end
+
+simplify.pretty_print = function(expr)
+    return pretty_print_recursive(expr, 0)
+end
+
+-- x * x^-1 => 1
+table.insert(rules, function(expr)
+  if is_mul(expr) then -- Check if it's a multiplication node
+    -- Iterate through all pairs of arguments to find an inverse pair
+    for i = 1, #expr.args do
+      for j = i + 1, #expr.args do
+        local a = expr.args[i]
+        local b = expr.args[j]
+        
+        local function is_inverse_pair(u, v)
+          -- u is base, v is base^-1 OR v is base, u is base^-1
+          if is_pow(v) and is_minus_one(v.exp) and ast_eq(u, v.base) then return true end
+          if is_pow(u) and is_minus_one(u.exp) and ast_eq(v, u.base) then return true end
+          return false
+        end
+
+        if is_inverse_pair(a, b) then
+          local others = {}
+          for k = 1, #expr.args do
+            if k ~= i and k ~= j then
+              table.insert(others, expr.args[k])
+            end
+          end
+          if #others == 0 then return ONE end -- Only a*a^-1, result is 1
+          table.insert(others, 1, ONE) -- Add 1 to the remaining terms
+          return mul(others) -- This will simplify to mul(others) after another rule pass removes the 1
+        end
+      end
+    end
+  end
+end)
+
+
+-- Patch: always set metatable on all AST results from simplify
+if _G.set_ast_mt then
+  local _old_simplify = simplify.simplify
+  function simplify.simplify(expr_input)
+    local result = _old_simplify(expr_input)
+    _G.set_ast_mt(result)
+    return result
+  end
+end
+
+-- End src/simplify.lua
+
+-- Begin src/trig.lua
+
+
+-- trig.lua
+-- Trig evaluation and symbolic helpers for nLuaCAS
+
+
+-- Numeric trig evaluation (angle in degrees if constant input)
+local function eval_trig_func(fname, arg)
+  if type(arg) == "table" and arg.type == "number" then
+    local val = arg.value
+    -- Assume degrees for simple numbers (can adapt for radians)
+    local rad = math.rad(val)
+    if fname == "sin" then return ast.number(math.sin(rad)) end
+    if fname == "cos" then return ast.number(math.cos(rad)) end
+    if fname == "tan" then return ast.number(math.tan(rad)) end
+    if fname == "cot" then return ast.number(1 / math.tan(rad)) end
+    if fname == "sec" then return ast.number(1 / math.cos(rad)) end
+    if fname == "csc" then return ast.number(1 / math.sin(rad)) end
+  end
+  -- Not a numeric constant: return nil, fall back to symbolic
+  return nil
+end
+
+-- Symbolic differentiation of all trig functions (chain rule applied)
+local function diff_trig_func(fname, arg, darg)
+  if fname == "sin" then
+    return ast.mul(ast.func("cos", {arg}), darg)
+  elseif fname == "cos" then
+    return ast.mul(ast.neg(ast.func("sin", {arg})), darg)
+  elseif fname == "tan" then
+    return ast.mul(ast.add(ast.number(1), ast.pow(ast.func("tan", {arg}), ast.number(2))), darg)
+  elseif fname == "cot" then
+    return ast.mul(ast.neg(ast.add(ast.number(1), ast.pow(ast.func("cot", {arg}), ast.number(2)))), darg)
+  elseif fname == "sec" then
+    return ast.mul(ast.mul(ast.func("sec", {arg}), ast.func("tan", {arg})), darg)
+  elseif fname == "csc" then
+    return ast.mul(ast.neg(ast.mul(ast.func("csc", {arg}), ast.func("cot", {arg}))), darg)
+  end
+  return nil
+end
+
+_G.trig = {
+  eval_trig_func = eval_trig_func,
+  diff_trig_func = diff_trig_func,
+}
+
+-- End src/trig.lua
+
+-- Begin src/derivative.lua
+local ast = rawget(_G, "ast") or require("ast")
+local trig = rawget(_G, "trig")
+
+-- Utility: shallow copy of a table
+local function copy(tbl)
+  if type(tbl) ~= "table" then return tbl end
+  local t = {}
+  for k,v in pairs(tbl) do t[k]=v end
+  return t
+end
+-- Utility: check if AST is a constant (number)
+local function is_const(ast)
+  return ast.type == "number"
+end
+
+-- Utility: check if AST is a variable (symbol)
+local function is_var(ast)
+  return ast.type == "variable"
+end
+
+-- Utility: check if AST is a specific symbol
+local function is_symbol(ast, name)
+  return ast.type == "variable" and ast.name == name
+end
+
+-- Utility: limit AST node
+local function lim(expr, var, to)
+  return { type = 'lim', expr = expr, var = var, to = to }
+end
+
+-- Main symbolic differentiation function
+local function diffAST(ast_node, var)
+  if not ast_node then
+    error("diffAST: invalid AST node passed in")
+  end
+  if type(ast_node) ~= "table" then
+    error("diffAST: encountered non-AST node of type " .. type(ast_node))
+  end
+  var = var or "x"
+  -- Numbers: d/dx(c) = 0
+  if ast_node.type == "number" then
+    return ast.number(0)
+  end
+  -- Symbols: d/dx(x) = 1, d/dx(y) = 0 (if y ~= x)
+  if ast_node.type == "variable" then
+    if ast_node.name == var then
+      return ast.number(1)
+    else
+      return ast.number(0)
+    end
+  end
+  -- Negation: d/dx(-u) = -du/dx
+  if ast_node.type == "neg" then
+    return ast.neg(diffAST(ast_node.value, var))
+  end
+  -- Addition: d/dx(u1+u2+...+un) = du1/dx + du2/dx + ... + dun/dx (n-ary)
+  if ast_node.type == "add" then
+    local deriv_args = {}
+    for i, term in ipairs(ast_node.args) do
+      deriv_args[i] = diffAST(term, var)
+    end
+    return ast.add(table.unpack(deriv_args))
+  end
+  -- Subtraction: d/dx(u-v) = du/dx - dv/dx
+  if ast_node.type == "sub" then
+    return ast.sub(diffAST(ast_node.left, var), diffAST(ast_node.right, var))
+  end
+  -- Multiplication: generalized product rule for n-ary mul
+  if ast_node.type == "mul" then
+    local n = #ast_node.args
+    local terms = {}
+    for k = 1, n do
+      local prod_args = {}
+      for i = 1, n do
+        if i == k then
+          prod_args[i] = diffAST(ast_node.args[i], var)
+        else
+          prod_args[i] = copy(ast_node.args[i])
+        end
+      end
+      terms[k] = ast.mul(table.unpack(prod_args))
+    end
+    return ast.add(table.unpack(terms))
+  end
+  -- Division: d/dx(u/v) = (du/dx*v - u*dv/dx)/v^2
+  if ast_node.type == "div" then
+    local u = ast_node.left
+    local v = ast_node.right
+    local du = diffAST(u, var)
+    local dv = diffAST(v, var)
+
+    local numerator = ast.sub(
+      ast.mul(du, copy(v)),
+      ast.mul(copy(u), dv)
+    )
+
+    local denominator = ast.pow(copy(v), ast.number(2))
+
+    return ast.div(numerator, denominator)
+  end
+  -- Power: d/dx(u^n) and d/dx(f(x)^g(x))
+  if ast_node.type == "pow" then
+    local u, n = ast_node.base, ast_node.exp
+    -- Case: u^c, c constant
+    if is_const(n) then
+      -- d/dx(u^c) = c*u^(c-1) * du/dx
+      return ast.mul(
+        ast.mul(copy(n), ast.pow(copy(u), ast.number(n.value - 1))),
+        diffAST(u, var)
+      )
+    -- Case: c^v, c constant
+    elseif is_const(u) then
+      -- d/dx(c^v) = ln(c) * c^v * dv/dx
+      return ast.mul(
+        ast.mul(ast.func("ln", { copy(u) }), ast.pow(copy(u), copy(n))),
+        diffAST(n, var)
+      )
+    else
+      -- General case: d/dx(u^v) = u^v * (v' * ln(u) + v * u'/u)
+      -- (by logarithmic differentiation)
+      return ast.mul(
+        ast.pow(copy(u), copy(n)),
+        ast.add(
+          ast.mul(diffAST(n, var), ast.func("ln", { copy(u) })),
+          ast.mul(copy(n), ast.div(diffAST(u, var), copy(u)))
+        )
+      )
+    end
+  end
+  -- Functions: sin, cos, tan, cot, sec, csc, exp, ln, log, sqrt, etc.
+  if ast_node.type == "func" then
+    local fname = ast_node.name
+    -- Support both .arg (single) and .args (list) notation
+    local u = ast_node.arg or (ast_node.args and ast_node.args[1])
+    local du = diffAST(u, var)
+    -- Use trig.lua for trigonometric differentiation if available
+    if trig and trig.diff_trig_func then
+      local trig_result = trig.diff_trig_func(fname, copy(u), du)
+      if trig_result then return trig_result end
+    end
+    if fname == "exp" then
+      return ast.mul(ast.func("exp", { copy(u) }), du)
+    elseif fname == "ln" then
+      return ast.mul(ast.div(ast.number(1), copy(u)), du)
+    elseif fname == "log" then
+      -- log(x) = ln(x) / ln(10), so derivative is 1/(x ln(10))
+      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(10) }))), du)
+    elseif fname == "sqrt" then
+      -- d/dx sqrt(u) = 1/(2*sqrt(u)) * du/dx
+      return ast.mul(ast.div(ast.number(1), ast.mul(ast.number(2), ast.func("sqrt", { copy(u) }))), du)
+    elseif fname == "asin" then
+      -- d/dx asin(u) = 1/sqrt(1-u^2) * du/dx
+      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du)
+    elseif fname == "acos" then
+      -- d/dx acos(u) = -1/sqrt(1-u^2) * du/dx
+      return ast.mul(ast.neg(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) }))), du)
+    elseif fname == "atan" then
+      -- d/dx atan(u) = 1/(1+u^2) * du/dx
+      return ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
+    elseif fname == "sinh" then
+      return ast.mul(ast.func("cosh", { copy(u) }), du)
+    elseif fname == "cosh" then
+      return ast.mul(ast.func("sinh", { copy(u) }), du)
+    elseif fname == "tanh" then
+      return ast.mul(ast.sub(ast.number(1), ast.pow(ast.func("tanh", { copy(u) }), ast.number(2))), du)
+    elseif fname == "asinh" then
+      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.add(ast.pow(copy(u), ast.number(2)), ast.number(1)) })), du)
+    elseif fname == "acosh" then
+      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) })), du)
+    elseif fname == "atanh" then
+      return ast.mul(ast.div(ast.number(1), ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
+    elseif fname == "log10" then
+      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(10) }))), du)
+    elseif fname == "log2" then
+      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(2) }))), du)
+    elseif fname == "abs" then
+      return ast.mul(ast.div(copy(u), ast.func("abs", { copy(u) })), du)
+    elseif fname == "sign" then
+      return ast.number(0)
+    elseif fname == "floor" or fname == "ceil" or fname == "round" then
+      -- Derivative is zero except at discontinuity
+      return ast.number(0)
+    elseif fname == "erf" then
+      -- d/dx erf(u) = 2/sqrt(pi) * exp(-u^2) * du/dx
+      return ast.mul(ast.mul(ast.div(ast.number(2), ast.func("sqrt", { ast.number(math.pi) })), ast.func("exp", { ast.neg(ast.pow(copy(u), ast.number(2))) })), du)
+    elseif fname == "gamma" then
+      -- d/dx gamma(u) = gamma(u) * digamma(u) * du/dx (digamma not implemented, fallback)
+      return { type = "unimplemented_derivative", func = fname, arg = copy(u) }
+    elseif fname == "digamma" then
+      -- d/dx digamma(u) = trigamma(u) * du/dx
+      return ast.mul(ast.func("trigamma", { copy(u) }), du)
+    elseif fname == "trigamma" then
+      -- d/dx trigamma(u) = polygamma(2, u) * du/dx
+      return ast.mul(ast.func("polygamma", { ast.number(2), copy(u) }), du)
+    else
+      -- Fallback: Use limit definition for unknown function
+      -- f'(x) = lim_{h->0} [f(x+h)-f(x)]/h
+      local h = ast.symbol("__h__")
+      local u_ph = ast.add(copy(u), h)
+      local fxh = ast.func(fname, { u_ph })
+      local fx = ast.func(fname, { copy(u) })
+      local nume = ast.sub(fxh, fx)
+      local quot = ast.div(nume, h)
+      return lim(quot, "__h__", ast.number(0))
+    end
+  end
+  -- Unhandled node types: fallback to limit definition
+  -- As a safety fallback, return an unknown node
+  local result = { type = "unhandled_node", original = ast_node }
+  if type(result) ~= "table" or not result.type then
+    error("diffAST: returned invalid AST node structure")
+  end
+  return result
+end
+
+
+-- Wrapper: derivative(expr, var)
+local function derivative(expr, var)
+  -- Load parser
+  local parser = rawget(_G, "parser") or require("parser")
+  -- Input validation and debug print
+  if type(expr) ~= "string" then
+    error("Invalid input to derivative(): expected string, got " .. type(expr))
+  end
+  print("DEBUG: input to parser.parse =", expr)
+  -- Parse expr string to AST
+  local tree = parser.parse(expr)
+  if not tree then
+    error("Parsing failed: input = " .. expr)
+  end
+  local result = diffAST(tree, var)
+  if type(result) ~= "table" or not result.type then
+    error("Invalid derivative AST structure")
+  end
+  return (rawget(_G, "simplify") or require("simplify")).simplify(result)
+end
+_G.derivative = derivative
+_G.diffAST = diffAST
+
+-- End src/derivative.lua
+
+-- Begin src/integrate.lua
+--[[
+  LuaCAS Symbolic Integration Module
+  Expanded with more heuristic rules for elementary functions.
+]]
+
+-- Utility: Deep copy a table
+local function copy(tbl)
+  if type(tbl) ~= "table" then return tbl end
+  local t = {}
+  for k,v in pairs(tbl) do t[k]=copy(v) end
+  return t
+end
+
+-- AST Node Constructors
+local function num(n) return {type='number', value=n} end
+local function sym(s) return {type='symbol', name=s} end
+-- Assuming binary operations use left/right as per existing utilities.
+-- Variadic builders are for convenience; simplify might convert them.
+local function mul_op(a, b) return {type='mul', left=a, right=b} end
+local function add_op(a, b) return {type='add', left=a, right=b} end
+-- Variadic builders (produce 'args' field)
+local function mul(...)
+  local args = {...}
+  if type(args[1]) == "table" and #args == 1 and type(args[1][1]) ~= "nil" then args = args[1] end
+  if #args == 0 then return num(1) end
+  if #args == 1 then return args[1] end
+  -- Build a chained binary structure for consistency with left/right expectations
+  local res = args[1]
+  for i = 2, #args do res = mul_op(res, args[i]) end
+  return res
+end
+local function add(...)
+  local args = {...}
+  if type(args[1]) == "table" and #args == 1 and type(args[1][1]) ~= "nil" then args = args[1] end
+  if #args == 0 then return num(0) end
+  if #args == 1 then return args[1] end
+  -- Build a chained binary structure
+  local res = args[1]
+  for i = 2, #args do res = add_op(res, args[i]) end
+  return res
+end
+
+local function sub(a, b) return {type='sub', left=a, right=b} end
+local function div(a, b) return {type='div', left=a, right=b} end
+local function pow(a, b) return {type='pow', left=a, right=b} end
+local function neg(u) return {type='neg', value=u} end
+local function func(fname, arg) return {type='func', name=fname, arg=arg} end
+local function raw(msg) return {type='raw', value=msg} end -- For unevaluated string messages
+local function unevaluated_integral(expression_ast, var_symbol_ast)
+    return {type = "integral", expr = expression_ast, var = var_symbol_ast}
+end
+
+-- Assume simplify and derivative modules are available as per the original context
+local simplify_fn = _G.simplify or function(ast) return ast end -- Stub if not available
+local derivative_module = _G.derivative or {}
+local diffAST = derivative_module.diffAST or function(ast, var_name) return raw("d/d"..var_name.." "..tostring(ast)) end -- Stub
+
+-- Utility: check if AST is a number
+local function is_const(ast)
+  return ast.type == "number"
+end
+
+-- Utility: check if AST is zero/one
+local function is_zero(ast) return is_const(ast) and ast.value == 0 end
+local function is_one(ast) return is_const(ast) and ast.value == 1 end
+
+-- Utility: check if AST is a variable (symbol)
+local function is_var(ast) -- Note: name "is_var" might be confusing, it means "is_symbol_type"
+  return ast.type == "symbol"
+end
+
+-- Utility: check if AST is a specific symbol
+local function is_symbol(ast, name_str)
+  return ast.type == "symbol" and ast.name == name_str
+end
+
+-- Utility: check if AST contains variable var_name (string)
+local function contains_var(node, var_name)
+  if not node or type(node) ~= "table" then return false end
+  if node.type == "symbol" then
+    return node.name == var_name
+  elseif node.type == "number" then
+    return false
+  elseif node.type == "neg" then
+    return contains_var(node.value, var_name)
+  elseif node.type == "add" or node.type == "sub" or node.type == "mul" or node.type == "div" or node.type == "pow" then
+    return contains_var(node.left, var_name) or contains_var(node.right, var_name)
+  elseif node.type == "func" then
+    if node.arg then return contains_var(node.arg, var_name) end
+  elseif node.type == "raw" or node.type == "integral" then -- Cannot look inside these easily
+    return false -- Or conservatively true if they might contain it. For now, false.
+  elseif node.args and type(node.args) == "table" then -- For variadic nodes
+    for _, arg_node in ipairs(node.args) do
+        if contains_var(arg_node, var_name) then return true end
+    end
+    return false
+  end
+  return false
+end
+
+-- Utility: check if AST is constant with respect to var_name (string)
+local function is_const_wrt_var(node, var_name)
+    return not contains_var(node, var_name)
+end
+
+-- Utility: check if AST is a linear in var_name (string): a*var_name + b
+local function is_linear(ast, var_name)
+  if is_const_wrt_var(ast, var_name) then return true end -- a constant is linear (a=0)
+  if ast.type == "add" then
+    return (is_linear(ast.left, var_name) and is_const_wrt_var(ast.right, var_name)) or
+           (is_const_wrt_var(ast.left, var_name) and is_linear(ast.right, var_name))
+  elseif ast.type == "mul" then
+    return (is_const_wrt_var(ast.left, var_name) and is_symbol(ast.right, var_name)) or
+           (is_const_wrt_var(ast.right, var_name) and is_symbol(ast.left, var_name))
+  elseif is_symbol(ast, var_name) then
+    return true
+  end
+  return false
+end
+
+-- Utility: extract (a, b) ASTs from a*var_name + b (if possible)
+-- Returns two ASTs: coefficient 'a' and constant term 'b'
+local function extract_linear_coeffs_ast(ast, var_name)
+  if is_symbol(ast, var_name) then
+    return num(1), num(0)
+  elseif is_const_wrt_var(ast, var_name) then
+    return num(0), copy(ast)
+  elseif ast.type == "mul" then
+    if is_const_wrt_var(ast.left, var_name) and is_symbol(ast.right, var_name) then
+      return copy(ast.left), num(0)
+    elseif is_const_wrt_var(ast.right, var_name) and is_symbol(ast.left, var_name) then
+      return copy(ast.right), num(0)
+    end
+  elseif ast.type == "add" then
+    if is_linear(ast.left, var_name) and is_const_wrt_var(ast.right, var_name) then
+      local a, b_left = extract_linear_coeffs_ast(ast.left, var_name)
+      return a, add_op(b_left, copy(ast.right))
+    elseif is_const_wrt_var(ast.left, var_name) and is_linear(ast.right, var_name) then
+      local a, b_right = extract_linear_coeffs_ast(ast.right, var_name)
+      return a, add_op(copy(ast.left), b_right)
+    end
+  end
+  return nil, nil -- Not in a*var+b form that we can easily extract symbolically
+end
+
+-- Utility: version of extract_linear_coeffs that returns numeric values for a, b if possible.
+local function extract_linear_coeffs_numeric(ast, var_name)
+    local a_ast, b_ast = extract_linear_coeffs_ast(ast, var_name)
+    if a_ast and b_ast and is_const(a_ast) and is_const(b_ast) then
+        return a_ast.value, b_ast.value
+    end
+    if a_ast and is_const(a_ast) and is_zero(b_ast) then -- for ax case
+        return a_ast.value, 0
+    end
+    -- Add more cases if b_ast is complex but evaluatable, or handle symbolic a, b later
+    return nil, nil
+end
+
+
+-- Utility: Substitute occurrences of a symbol (var_to_replace_name) with an expression (replacement_expr_ast)
+local function substitute_var(node_in, var_to_replace_name, replacement_expr_ast)
+  local node = copy(node_in)
+  if node.type == "symbol" and node.name == var_to_replace_name then
+    return copy(replacement_expr_ast)
+  elseif node.type == "neg" then
+    node.value = substitute_var(node.value, var_to_replace_name, replacement_expr_ast)
+    return node
+  elseif node.type == "add" or node.type == "sub" or node.type == "mul" or node.type == "div" or node.type == "pow" then
+    if node.left then node.left = substitute_var(node.left, var_to_replace_name, replacement_expr_ast) end
+    if node.right then node.right = substitute_var(node.right, var_to_replace_name, replacement_expr_ast) end
+    return node
+  elseif node.type == "func" then
+    if node.arg then node.arg = substitute_var(node.arg, var_to_replace_name, replacement_expr_ast) end
+    return node
+  elseif type(node.args) == "table" then
+    for i, arg_node in ipairs(node.args) do
+      node.args[i] = substitute_var(arg_node, var_to_replace_name, replacement_expr_ast)
+    end
+    return node
+  else
+    return node
+  end
+end
+
+-- Forward declaration for integrateAST
+local integrateAST
+
+-- Check if an AST node is an "unevaluated integral" or "raw" type
+local function is_raw_or_integral(ast_node)
+    return ast_node and (ast_node.type == "raw" or ast_node.type == "integral")
+end
+
+-- Integration by parts helper: ∫ u dv = u v - ∫ v du
+local function integrate_by_parts(u_ast, dv_ast, var_name)
+  local du = diffAST(u_ast, var_name)
+  if is_raw_or_integral(du) then return nil end -- Derivative failed
+
+  local v = integrateAST(dv_ast, var_name)
+  if is_raw_or_integral(v) then return nil end -- Integration of dv failed or unevaluated
+
+  local v_du_product = simplify_fn(mul_op(copy(v), copy(du)))
+  if is_zero(v_du_product) then -- if v*du is 0, integral is 0
+      return simplify_fn(mul_op(copy(u_ast), copy(v)))
+  end
+  
+  local integral_v_du = integrateAST(v_du_product, var_name)
+  if is_raw_or_integral(integral_v_du) then return nil end -- Integration of v*du failed
+
+  return simplify_fn(sub(mul_op(copy(u_ast), copy(v)), integral_v_du))
+end
+
+-- Heuristic attempt for Integration by Parts
+local function try_integration_by_parts(ast, var_name)
+  if ast.type ~= "mul" then return nil end
+
+  local term1, term2 = ast.left, ast.right
+  if not term1 or not term2 then return nil end -- Ensure binary multiplication
+
+  local function get_expr_type_for_ibp(expr, v_name)
+    if not contains_var(expr, v_name) then return "const" end
+    if expr.type == "func" and (expr.name == "log" or expr.name == "ln") then return "log" end
+    -- TODO: Add inverse trig checks: "asin", "acos", "atan", "acot", "asec", "acsc"
+    -- if expr.type == "func" and is_inv_trig(expr.name) then return "inv_trig" end
+    
+    -- Basic polynomial check (symbol, or symbol^const_power)
+    if is_symbol(expr, v_name) then return "algebraic" end
+    if expr.type == "pow" and is_symbol(expr.left, v_name) and is_const(expr.right) and expr.right.value >= 0 then return "algebraic" end
+    -- A more robust is_polynomial check would be beneficial here.
+
+    if expr.type == "func" and (expr.name == "sin" or expr.name == "cos" or expr.name == "tan" or expr.name == "sec" or expr.name == "csc" or expr.name == "cot") then return "trig" end
+    if expr.type == "func" and expr.name == "exp" then return "exp" end
+    return "unknown"
+  end
+
+  local type1 = get_expr_type_for_ibp(term1, var_name)
+  local type2 = get_expr_type_for_ibp(term2, var_name)
+
+  local u, dv
+  local order = {log = 1, inv_trig = 2, algebraic = 3, trig = 4, exp = 5, unknown = 99, const = 100 }
+
+  -- Decide u and dv based on LIATE (lower order value is preferred for u)
+  if (order[type1] or 99) <= (order[type2] or 99) then
+    u = term1; dv = term2
+  else
+    u = term2; dv = term1
+  end
+  
+  -- Avoid trivial IBP like const * expr
+  if get_expr_type_for_ibp(u, var_name) == "const" or get_expr_type_for_ibp(dv, var_name) == "const" then
+      return nil
+  end
+  
+  -- print("IBP Attempt: u="..parser.tostring(u).." ("..type1.."), dv="..parser.tostring(dv) .. " ("..type2..")")
+  return integrate_by_parts(u, dv, var_name)
+end
+
+
+-- Heuristic attempt for U-Substitution
+local function try_u_substitution(ast, var_name)
+  -- Pattern 1: ∫ f(g(x)) * k * g'(x) dx = k * F(g(x))
+  if ast.type == "mul" then
+    local factor1, factor2 = ast.left, ast.right
+    if not factor1 or not factor2 then return nil end
+
+    local function check_pair_for_u_sub(term_f_g_candidate, term_maybe_kg_prime, v_name)
+        if term_f_g_candidate.type == "func" and term_f_g_candidate.arg then
+            local g_ast = term_f_g_candidate.arg
+            local g_prime_ast = diffAST(copy(g_ast), v_name)
+
+            if is_raw_or_integral(g_prime_ast) or is_zero(g_prime_ast) then return nil end
+
+            local k_ast = simplify_fn(div(copy(term_maybe_kg_prime), copy(g_prime_ast)))
+
+            if is_const_wrt_var(k_ast, v_name) then
+                local dummy_var_sym = sym("u_sub_dummy_") -- Unique dummy var
+                local integral_f_of_u = integrateAST(func(term_f_g_candidate.name, dummy_var_sym), dummy_var_sym.name)
+
+                if not is_raw_or_integral(integral_f_of_u) then
+                    local result_in_g = substitute_var(integral_f_of_u, dummy_var_sym.name, g_ast)
+                    return simplify_fn(mul_op(k_ast, result_in_g))
+                end
+            end
+        end
+        return nil
+    end
+
+    local res = check_pair_for_u_sub(factor1, factor2, var_name)
+    if res then return res end
+    res = check_pair_for_u_sub(factor2, factor1, var_name)
+    if res then return res end
+  end
+
+  -- Pattern 2: ∫ k * g'(x) * g(x)^n dx = k * g(x)^(n+1)/(n+1)  (or k*ln|g(x)| if n=-1)
+  -- This can appear as g'(x) * (g(x)^n) or (g(x)^n) * g'(x)
+  -- Or g'(x) / (g(x)^-n)
+  local function check_g_power_g_prime(term1, term2, v_name, is_division_form)
+    local g_ast, n_ast, g_prime_multiplier_ast
+
+    -- Identify g(x)^n part and the other part (potential k*g'(x))
+    -- Case A: term1 is g(x)^n or g(x)
+    if term1.type == "pow" then
+        g_ast = term1.left; n_ast = term1.right; g_prime_multiplier_ast = term2;
+    elseif not (term2.type == "pow") then -- term1 is g(x), term2 is k*g'(x)
+        g_ast = term1; n_ast = num(1); g_prime_multiplier_ast = term2;
+    end
+    
+    if g_ast and n_ast then
+        if not is_const_wrt_var(n_ast,v_name) then return nil end -- n must be constant
+        local n_val = (is_const(n_ast) and n_ast.value) or nil -- Get numeric n if possible
+        if is_division_form then 
+            if n_val then n_val = -n_val else n_ast = neg(n_ast) end
+        end
+
+        local g_prime_ast = diffAST(copy(g_ast), v_name)
+        if is_raw_or_integral(g_prime_ast) or is_zero(g_prime_ast) then return nil end
+
+        local k_ast = simplify_fn(div(copy(g_prime_multiplier_ast), copy(g_prime_ast)))
+
+        if is_const_wrt_var(k_ast, v_name) then
+            if n_val == -1 or (type(n_val) ~= "number" and simplify_fn(add_op(copy(n_ast), num(1))).type=="number" and simplify_fn(add_op(copy(n_ast), num(1))).value == 0) then -- n = -1 case (∫ k*g'/g)
+                return simplify_fn(mul_op(k_ast, func("ln", func("abs", copy(g_ast)))))
+            else -- n ≠ -1 case
+                local n_plus_1_ast
+                if n_val then n_plus_1_ast = num(n_val + 1) else n_plus_1_ast = simplify_fn(add_op(copy(n_ast),num(1))) end
+                if is_zero(n_plus_1_ast) then return nil end -- Should have been caught by n=-1
+
+                return simplify_fn(mul_op(k_ast, div(pow(copy(g_ast), n_plus_1_ast), n_plus_1_ast)))
+            end
+        end
+    end
+    return nil
+  end
+
+  if ast.type == "mul" then
+    local res = check_g_power_g_prime(ast.left, ast.right, var_name, false)
+    if res then return res end
+    res = check_g_power_g_prime(ast.right, ast.left, var_name, false)
+    if res then return res end
+  elseif ast.type == "div" then
+    -- g_prime_multiplier / g^n  is effectively g_prime_multiplier * g^(-n)
+    local res = check_g_power_g_prime(ast.right, ast.left, var_name, true) -- term1=g^n (denominator), term2=g_prime_mult (numerator)
+    if res then return res end
+  end
+  
+  return nil
+end
+
+
+-- Risch-style: Rational Integration (focused rules)
+local function tryIntegrateRational(ast, var_name)
+  -- Assuming ast contains var_name, is not sum/sub/neg/const (handled by integrateAST main).
+  if is_symbol(ast, var_name) then
+    return div(pow(sym(var_name), num(2)), num(2)) -- ∫ x dx = x^2/2
+  end
+
+  if ast.type == "mul" then
+    local left, right = ast.left, ast.right
+    if is_const_wrt_var(left, var_name) then
+      local integral_of_right = integrateAST(right, var_name)
+      if not is_raw_or_integral(integral_of_right) then return mul_op(copy(left), integral_of_right) end
+    elseif is_const_wrt_var(right, var_name) then
+      local integral_of_left = integrateAST(left, var_name)
+      if not is_raw_or_integral(integral_of_left) then return mul_op(copy(right), integral_of_left) end
+    end
+  end
+
+  if ast.type == "div" then
+    local numerator, denominator = ast.left, ast.right
+    if is_const_wrt_var(denominator, var_name) and not is_zero(denominator) then
+      local integral_of_numerator = integrateAST(numerator, var_name)
+      if not is_raw_or_integral(integral_of_numerator) then return div(integral_of_numerator, copy(denominator)) end
+    end
+
+    -- ∫ c / var^n dx (c can be const expr wrt var_name)
+    if is_const_wrt_var(numerator, var_name) and denominator.type == "pow" and
+       is_symbol(denominator.left, var_name) and is_const(denominator.right) then
+      local c_ast = numerator
+      local n_val = denominator.right.value
+      if n_val == 1 then
+        return mul_op(copy(c_ast), func("ln", func("abs", sym(var_name))))
+      else
+        return div(mul_op(copy(c_ast), pow(sym(var_name), num(1-n_val))), num(1-n_val))
+      end
+    end
+     -- ∫ c / var dx (denominator is just var, not var^1)
+    if is_const_wrt_var(numerator, var_name) and is_symbol(denominator, var_name) then
+        return mul_op(copy(numerator), func("ln", func("abs", sym(var_name))))
+    end
+
+    -- Rule: ∫ k*f'(x) / f(x) dx = k*ln|f(x)| (f'(x)/f(x) is covered by u-sub g'/g)
+    -- This can be seen as a specific u-substitution case but often useful to have directly.
+    local deriv_denominator = diffAST(copy(denominator), var_name)
+    if not is_raw_or_integral(deriv_denominator) and not is_zero(deriv_denominator) then
+        local k_ast = simplify_fn(div(copy(numerator), deriv_denominator))
+        if is_const_wrt_var(k_ast, var_name) then
+            return mul_op(k_ast, func("ln", func("abs",copy(denominator))))
+        end
+    end
+  end
+
+  if ast.type == "pow" then
+    local base, exponent_ast = ast.left, ast.right
+    -- ∫ var^n dx, n is const_wrt_var
+    if is_symbol(base, var_name) and is_const_wrt_var(exponent_ast, var_name) then
+      if is_const(exponent_ast) then -- Numeric exponent
+          local n_val = exponent_ast.value
+          if n_val == -1 then
+            return func("ln", func("abs", sym(var_name)))
+          else
+            return div(pow(sym(var_name), num(n_val+1)), num(n_val+1))
+          end
+      else -- Symbolic exponent 'a' constant wrt var_name: ∫ var^a d(var)
+          local exp_plus_one = simplify_fn(add_op(copy(exponent_ast), num(1)))
+          -- We need a way to check if exp_plus_one is symbolically zero.
+          -- Crude check: if simplify makes it num(0).
+          if is_const(exp_plus_one) and exp_plus_one.value == 0 then -- exponent_ast was symbolically -1
+              return func("ln", func("abs", sym(var_name)))
+          else
+              return div(pow(sym(var_name), exp_plus_one), exp_plus_one)
+          end
+      end
+    end
+
+    -- ∫ c^var d(var), c is const_wrt_var
+    if is_const_wrt_var(base, var_name) and is_symbol(exponent_ast, var_name) then
+      if is_const(base) and base.value <= 0 then return nil end -- Avoid issues with log of non-positive
+      if is_const(base) and base.value == 1 then return sym(var_name) end -- ∫ 1^var d(var) = ∫ 1 d(var) = var
+
+      local ln_base = func("ln", copy(base))
+      -- if simplify(ln_base) is zero, base was 1 (handled above)
+      return div(pow(copy(base), sym(var_name)), ln_base)
+    end
+  end
+  return nil
+end
+
+-- Risch-style: Trigonometric Integration
+local function tryIntegrateTrig(ast, var_name)
+  if ast.type == "func" then
+    local fname = ast.name
+    local u_ast = ast.arg
+    
+    -- Linear change of variable: f(ax+b)
+    if is_linear(u_ast, var_name) then
+      local a_num, b_num = extract_linear_coeffs_numeric(u_ast, var_name)
+      if a_num ~= nil and a_num ~= 0 then
+        local reciprocal_a = num(1 / a_num)
+        if fname == "sin" then return mul_op(neg(reciprocal_a), func("cos", copy(u_ast))) end
+        if fname == "cos" then return mul_op(reciprocal_a, func("sin", copy(u_ast))) end
+        if fname == "tan" then return mul_op(neg(reciprocal_a), func("ln", func("abs", func("cos", copy(u_ast))))) end
+        if fname == "cot" then return mul_op(reciprocal_a, func("ln", func("abs", func("sin", copy(u_ast))))) end
+        if fname == "sec" then return mul_op(reciprocal_a, func("ln", func("abs", add_op(func("sec", copy(u_ast)), func("tan", copy(u_ast)))))) end
+        if fname == "csc" then return mul_op(neg(reciprocal_a), func("ln", func("abs", add_op(func("csc", copy(u_ast)), func("cot", copy(u_ast)))))) end
+      elseif a_num ~= nil and a_num == 0 then -- Argument is constant, e.g. sin(5)
+        return mul_op(copy(ast), sym(var_name)) -- This is handled by integrateAST's const rule
+      end
+    end
+    
+    -- General chain rule f(u(x)) where u'(x) is a non-zero constant (e.g. sin(2x^2+1) integrated wrt x^2)
+    -- This is largely covered by u-substitution now.
+    -- However, if u' is a simple number, it's a quick win.
+    local du_ast = diffAST(copy(u_ast), var_name)
+    if is_const(du_ast) and not is_zero(du_ast) then
+      local inv_du_val = num(1 / du_ast.value)
+      if fname == "sin" then return mul_op(neg(inv_du_val), func("cos", copy(u_ast))) end
+      if fname == "cos" then return mul_op(inv_du_val, func("sin", copy(u_ast))) end
+      -- tan, cot, sec, csc with const u' follow similarly.
+    end
+  end
+
+  -- Powers of trig functions like sin^2(u), cos^2(u), tan^2(u), sec^2(u) for linear u = ax+b
+  if ast.type == "pow" and is_const(ast.right) then
+    local power_val = ast.right.value
+    local base_func_ast = ast.left
+    if base_func_ast.type == "func" and base_func_ast.arg and is_linear(base_func_ast.arg, var_name) then
+        local u_inner_ast = base_func_ast.arg
+        local a_num, _ = extract_linear_coeffs_numeric(u_inner_ast, var_name)
+
+        if a_num ~= nil and a_num ~= 0 then
+            local inv_a_ast = num(1/a_num)
+            local func_name = base_func_ast.name
+            
+            if power_val == 2 then -- Squares
+                if func_name == "sin" then -- ∫sin^2(u)du = (1/a)[u/2 - sin(2u)/4]
+                    local term_u_half = div(copy(u_inner_ast), num(2))
+                    local term_sin_2u_quarter = div(func("sin", mul_op(num(2), copy(u_inner_ast))), num(4))
+                    return mul_op(inv_a_ast, sub(term_u_half, term_sin_2u_quarter))
+                elseif func_name == "cos" then -- ∫cos^2(u)du = (1/a)[u/2 + sin(2u)/4]
+                    local term_u_half = div(copy(u_inner_ast), num(2))
+                    local term_sin_2u_quarter = div(func("sin", mul_op(num(2), copy(u_inner_ast))), num(4))
+                    return mul_op(inv_a_ast, add_op(term_u_half, term_sin_2u_quarter))
+                elseif func_name == "tan" then -- ∫tan^2(u)du = (1/a)[tan(u) - u]
+                    return mul_op(inv_a_ast, sub(func("tan", copy(u_inner_ast)), copy(u_inner_ast)))
+                elseif func_name == "cot" then -- ∫cot^2(u)du = (1/a)[-cot(u) - u]
+                    return mul_op(inv_a_ast, sub(neg(func("cot", copy(u_inner_ast))), copy(u_inner_ast)))
+                elseif func_name == "sec" then -- ∫sec^2(u)du = (1/a)tan(u)
+                    return mul_op(inv_a_ast, func("tan", copy(u_inner_ast)))
+                elseif func_name == "csc" then -- ∫csc^2(u)du = (1/a)(-cot(u))
+                    return mul_op(neg(inv_a_ast), func("cot", copy(u_inner_ast)))
+                end
+            end
+        end
+    end
+  end
+
+  return nil
+end
+
+-- Risch-style: Exponential Integration
+local function tryIntegrateExp(ast, var_name)
+    if ast.type == "func" and ast.name == "exp" then
+        local u_ast = ast.arg
+        -- Case: ∫ e^(ax+b) dx = (1/a)e^(ax+b)
+        if is_linear(u_ast, var_name) then
+            local a_num, b_num = extract_linear_coeffs_numeric(u_ast, var_name)
+            if a_num ~= nil and a_num ~= 0 then
+                return mul_op(num(1/a_num), func("exp", copy(u_ast)))
+            end
+        end
+        -- Case: ∫ e^(u(x)) u'(x) dx (u-sub) -- already handled by try_u_substitution for f(g(x)) * g'(x)
+    end
+    -- Case: ∫ a^(bx+c) dx
+    if ast.type == "pow" and is_const_wrt_var(ast.left, var_name) and is_linear(ast.right, var_name) then
+        local base_ast = ast.left
+        local exponent_ast = ast.right
+        local a_num, b_num = extract_linear_coeffs_numeric(exponent_ast, var_name)
+        if a_num ~= nil and a_num ~= 0 then
+            -- ∫ c^(kx+m) dx = c^(kx+m) / (k * ln(c))
+            local k_ln_c_ast = mul_op(num(a_num), func("ln", copy(base_ast)))
+            if is_zero(k_ln_c_ast) then return nil end -- Avoid division by zero if base is 1
+
+            return div(copy(ast), k_ln_c_ast)
+        end
+    end
+    return nil
+end
+
+-- Risch-style: Logarithmic Integration (e.g. ∫ ln(ax+b) dx)
+local function tryIntegrateLog(ast, var_name)
+    if ast.type == "func" and (ast.name == "ln" or ast.name == "log") then
+        local u_ast = ast.arg
+        -- Using integration by parts: ∫ ln(u) du = u ln(u) - u
+        -- If we have ∫ ln(ax+b) dx, let u = ax+b, dv = dx. Then du = a dx, v = x.
+        -- This is better handled via the general IBP and u-substitution rules together.
+        -- Example: ∫ ln(x) dx.  Let u = ln(x), dv = dx. Then du = 1/x dx, v = x.
+        -- ∫ ln(x) dx = x ln(x) - ∫ x * (1/x) dx = x ln(x) - ∫ 1 dx = x ln(x) - x.
+        -- We try IBP if it's just a log function.
+        if is_linear(u_ast, var_name) and is_symbol(u_ast, var_name) then -- handles simple ln(x)
+            local u = copy(ast) -- ln(x)
+            local dv = sym(var_name) -- dx implicitly
+            -- Integrate by parts for ln(x) and log(x)
+            local integral_result = integrate_by_parts(u, num(1), var_name) -- ∫ 1 * ln(x) dx, treating 1 as dv'
+            if not is_raw_or_integral(integral_result) then
+                return integral_result
+            end
+        end
+    end
+    return nil
+end
+
+
+-- Main integration function
+integrateAST = function(ast_node, var)
+  if not ast_node then
+    error("integrateAST: invalid AST node passed in")
+  end
+  if type(ast_node) ~= "table" then
+    error("integrateAST: encountered non-AST node of type " .. type(ast_node))
+  end
+  var = var or "x" -- Default variable of integration
+
+  -- Rule 1: Constant: ∫ c dx = c*x
+  if is_const_wrt_var(ast_node, var) then
+    return simplify_fn(mul_op(copy(ast_node), sym(var)))
+  end
+
+  -- Rule 2: Sum/Difference: ∫ (u ± v) dx = ∫ u dx ± ∫ v dx (n-ary add)
+  if ast_node.type == "add" then
+    local integrated_args = {}
+    for i, term in ipairs(ast_node.args) do
+      integrated_args[i] = integrateAST(term, var)
+      if is_raw_or_integral(integrated_args[i]) then
+        return unevaluated_integral(copy(ast_node), sym(var)) -- If any term fails, return unevaluated
+      end
+    end
+    return simplify_fn(add(table.unpack(integrated_args)))
+  end
+  if ast_node.type == "sub" then
+    local left_int = integrateAST(ast_node.left, var)
+    local right_int = integrateAST(ast_node.right, var)
+    if is_raw_or_integral(left_int) or is_raw_or_integral(right_int) then
+      return unevaluated_integral(copy(ast_node), sym(var))
+    end
+    return simplify_fn(sub(left_int, right_int))
+  end
+
+  -- Rule 3: Negation: ∫ -u dx = -∫ u dx
+  if ast_node.type == "neg" then
+    local integrated_value = integrateAST(ast_node.value, var)
+    if is_raw_or_integral(integrated_value) then
+      return unevaluated_integral(copy(ast_node), sym(var))
+    end
+    return simplify_fn(neg(integrated_value))
+  end
+
+  -- Heuristics Order:
+  -- 1. U-Substitution (often simplifies complex expressions into basic forms)
+  -- 2. Rational Function Rules (Power Rule, 1/x rule, etc.)
+  -- 3. Trigonometric Rules
+  -- 4. Exponential Rules
+  -- 5. Logarithmic Rules
+  -- 6. Integration by Parts (can transform products)
+  -- 7. Fallback to unevaluated.
+
+  local result
+
+  -- Try U-Substitution first
+  result = try_u_substitution(ast_node, var)
+  if result then return simplify_fn(result) end
+
+  -- Try Rational Integration (handles x^n, 1/x, c/f(x) etc.)
+  result = tryIntegrateRational(ast_node, var)
+  if result then return simplify_fn(result) end
+
+  -- Try Trigonometric Integration
+  result = tryIntegrateTrig(ast_node, var)
+  if result then return simplify_fn(result) end
+
+  -- Try Exponential Integration
+  result = tryIntegrateExp(ast_node, var)
+  if result then return simplify_fn(result) end
+
+  -- Try Logarithmic Integration (especially for simple ln(x))
+  result = tryIntegrateLog(ast_node, var)
+  if result then return simplify_fn(result) end
+
+  -- Try Integration by Parts (should be after simpler forms, as it's often more complex)
+  result = try_integration_by_parts(ast_node, var)
+  if result then return simplify_fn(result) end
+
+
+  -- Fallback: If no rule applies, return an unevaluated integral node
+  return unevaluated_integral(copy(ast_node), sym(var))
+end
+
+-- Wrapper function for external calls
+local function integrate(expr_str, var_str)
+  local parser = rawget(_G, "parser") or require("parser")
+  if type(expr_str) ~= "string" then
+    error("Invalid input to integrate(): expected string, got " .. type(expr_str))
+  end
+  local parsed_ast = parser.parse(expr_str)
+  if not parsed_ast then
+    error("Parsing failed for expression: " .. expr_str)
+  end
+  local result_ast = integrateAST(parsed_ast, var_str or "x")
+  return simplify_fn(result_ast) -- Always try to simplify the final result
+end
+
+_G.integrate = integrate
+_G.integrateAST = integrateAST
+
+-- End src/integrate.lua
+
+-- Begin src/solve.lua
+-- solve.lua
+-- Symbolic solver for equations: accepts AST (or string), returns solution(s) as string/AST
+-- Works with ast.lua and simplify.lua
+
+
+-- Utility to check node type
+local function isNum(ast)
+    return ast and ast.type == "number"
+end
+local function isVar(ast, v)
+    return ast and ast.type == "variable" and (not v or ast.name == v)
+end
+
+-- Deep copy for ASTs
+local function deepCopy(obj)
+    if type(obj) ~= "table" then return obj end
+    local res = {}
+    for k, v in pairs(obj) do res[k] = deepCopy(v) end
+    return res
+end
+
+-- Simple AST pretty printer
+local function astToString(ast)
+    if not ast then return "?" end
+    if ast.type == "number" then return tostring(ast.value) end
+    if ast.type == "variable" then return ast.name end
+    if ast.type == "add" then return "("..astToString(ast.left).."+"..astToString(ast.right)..")" end
+    if ast.type == "sub" then return "("..astToString(ast.left).."-"..astToString(ast.right)..")" end
+    if ast.type == "mul" then return astToString(ast.left).."*"..astToString(ast.right) end
+    if ast.type == "div" then return astToString(ast.left).."/"..astToString(ast.right) end
+    if ast.type == "power" then return astToString(ast.left).."^"..astToString(ast.right) end
+    if ast.type == "neg" then return "-("..astToString(ast.value)..")" end
+    if ast.type == "func" then
+        local argstrs = {}
+        for _, arg in ipairs(ast.args or {}) do
+            table.insert(argstrs, astToString(arg))
+        end
+        return ast.name .. "(" .. table.concat(argstrs, ",") .. ")"
+    end
+    if ast.type == "eq" then return astToString(ast.left).." = "..astToString(ast.right) end
+    if ast.type == "symbol" then return ast.name end
+    return "?"
+end
+
+-- Evaluate simple expressions (needed for numeric fallback)
+local function eval(ast, vars)
+    vars = vars or {}
+    if ast.type == "number" then return ast.value end
+    if ast.type == "variable" then return vars[ast.name] or error("Variable "..ast.name.." unassigned") end
+    if ast.type == "add" then return eval(ast.left, vars) + eval(ast.right, vars) end
+    if ast.type == "sub" then return eval(ast.left, vars) - eval(ast.right, vars) end
+    if ast.type == "mul" then return eval(ast.left, vars) * eval(ast.right, vars) end
+    if ast.type == "div" then return eval(ast.left, vars) / eval(ast.right, vars) end
+    if ast.type == "power" then return eval(ast.left, vars) ^ eval(ast.right, vars) end
+    if ast.type == "neg" then return -eval(ast.value, vars) end
+    -- basic functions
+    if ast.type == "func" then
+        local fn = math[ast.name]
+        if fn then
+            local args = {}
+            for _, arg in ipairs(ast.args) do
+                table.insert(args, eval(arg, vars))
+            end
+            return fn(table.unpack(args))
+        end
+    end
+    error("Eval: unsupported node type "..tostring(ast.type))
+end
+
+-- Extract coefficients for ax^n + bx + c + ... (monomials in var)
+local function polyCoeffs(ast, var, maxdeg)
+    -- Returns: { [0]=c, [1]=b, [2]=a, ... }
+    local coeffs = {}
+    local function walk(node)
+        if node.type == "add" or node.type == "sub" then
+            local l = walk(node.left)
+            local r = walk(node.right)
+            for k,v in pairs(l) do coeffs[k] = (coeffs[k] or 0) + v end
+            for k,v in pairs(r) do
+                coeffs[k] = (coeffs[k] or 0) + (node.type=="add" and v or -v)
+            end
+            return coeffs
+        elseif node.type == "mul" then
+            if isNum(node.left) and isVar(node.right, var) then
+                coeffs[1] = (coeffs[1] or 0) + node.left.value
+            elseif isNum(node.right) and isVar(node.left, var) then
+                coeffs[1] = (coeffs[1] or 0) + node.right.value
+            elseif isNum(node.left) and node.right.type == "power"
+                    and isVar(node.right.left, var)
+                    and isNum(node.right.right) then
+                coeffs[node.right.right.value] = (coeffs[node.right.right.value] or 0) + node.left.value
+            end
+        elseif node.type == "power" and isVar(node.left, var) and isNum(node.right) then
+            coeffs[node.right.value] = (coeffs[node.right.value] or 0) + 1
+        elseif isVar(node, var) then
+            coeffs[1] = (coeffs[1] or 0) + 1
+        elseif isNum(node) then
+            coeffs[0] = (coeffs[0] or 0) + node.value
+        end
+        return coeffs
+    end
+    walk(ast)
+    return coeffs
+end
+
+-- Pattern-matcher for common forms
+local function matchLinearEq(eq, var)
+    -- ax + b = 0
+    if eq.type == "eq" then
+        local l = eq.left
+        local r = eq.right
+        local coeffs = polyCoeffs({type="sub", left=l, right=r}, var)
+        local a = coeffs[1] or 0
+        local b = coeffs[0] or 0
+        if a ~= 0 then
+            return -b/a
+        end
+    end
+    return nil
+end
+
+local function matchQuadraticEq(eq, var)
+    -- ax^2 + bx + c = 0
+    if eq.type == "eq" then
+        local l = eq.left
+        local r = eq.right
+        local coeffs = polyCoeffs({type="sub", left=l, right=r}, var)
+        local a = coeffs[2] or 0
+        local b = coeffs[1] or 0
+        local c = coeffs[0] or 0
+        if a ~= 0 then
+            local D = b^2 - 4*a*c
+            if D < 0 then return nil end
+            local sqrtD = math.sqrt(D)
+            return { (-b+sqrtD)/(2*a), (-b-sqrtD)/(2*a) }
+        end
+    end
+    return nil
+end
+
+-- Cardano's method for cubics: ax^3+bx^2+cx+d=0
+local function matchCubicEq(eq, var)
+    if eq.type == "eq" then
+        local l = eq.left
+        local r = eq.right
+        local coeffs = polyCoeffs({type="sub", left=l, right=r}, var)
+        local a = coeffs[3] or 0
+        local b = coeffs[2] or 0
+        local c = coeffs[1] or 0
+        local d = coeffs[0] or 0
+        if a ~= 0 then
+            -- Depressed cubic: t^3 + pt + q = 0
+            local p = (3*a*c - b^2)/(3*a^2)
+            local q = (2*b^3 - 9*a*b*c + 27*a^2*d)/(27*a^3)
+            local roots = {}
+            local delta = (q^2)/4 + (p^3)/27
+            if delta > 0 then
+                local sqrt_delta = math.sqrt(delta)
+                local u = ((-q)/2 + sqrt_delta)^(1/3)
+                local v = ((-q)/2 - sqrt_delta)^(1/3)
+                local root = u + v - b/(3*a)
+                table.insert(roots, root)
+                return roots
+            elseif delta == 0 then
+                local u = (-q/2)^(1/3)
+                local r1 = 2*u - b/(3*a)
+                local r2 = -u - b/(3*a)
+                return { r1, r2 }
+            else
+                -- Three real roots
+                local r = math.sqrt(-p^3/27)
+                local phi = math.acos(-q/(2*r))
+                local t = 2*math.sqrt(-p/3)
+                for k=0,2 do
+                    local angle = (phi+2*math.pi*k)/3
+                    local root = t*math.cos(angle) - b/(3*a)
+                    table.insert(roots, root)
+                end
+                return roots
+            end
+        end
+    end
+    return nil
+end
+
+-- Solve simple trig equations, e.g. sin(x)=0, cos(x)=1, tan(x)=a
+local function matchTrigEq(eq, var)
+    if eq.type == "eq" then
+        local l, r = eq.left, eq.right
+        if l.type == "func" and isVar(l.args[1], var) then
+            local fname = l.name
+            if fname == "sin" then
+                -- sin(x)=a → x=arcsin(a)+2πk, π-arcsin(a)+2πk
+                if isNum(r) and r.value >= -1 and r.value <= 1 then
+                    return {
+                        { type = "add", left = { type = "func", name = "arcsin", args = { r } }, right = { type = "symbol", name = "2πk" } },
+                        { type = "add", left = { type = "sub", left = { type = "symbol", name = "π" }, right = { type = "func", name = "arcsin", args = { r } } }, right = { type = "symbol", name = "2πk" } }
+                    }
+                end
+            elseif fname == "cos" then
+                -- cos(x)=a → x=arccos(a)+2πk, -arccos(a)+2πk
+                if isNum(r) and r.value >= -1 and r.value <= 1 then
+                    return {
+                        { type = "add", left = { type = "func", name = "arccos", args = { r } }, right = { type = "symbol", name = "2πk" } },
+                        { type = "add", left = { type = "neg", value = { type = "func", name = "arccos", args = { r } } }, right = { type = "symbol", name = "2πk" } }
+                    }
+                end
+            elseif fname == "tan" then
+                -- tan(x)=a → x=arctan(a)+πk
+                if isNum(r) then
+                    return {
+                        { type = "add", left = { type = "func", name = "arctan", args = { r } }, right = { type = "symbol", name = "πk" } }
+                    }
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Solve exponential/logarithmic equations
+local function matchExpLogEq(eq, var)
+    if eq.type == "eq" then
+        local l, r = eq.left, eq.right
+        -- exp(x) = a → x=ln(a)
+        if l.type == "func" and l.name == "exp" and isVar(l.args[1], var) and isNum(r) and r.value > 0 then
+            return {
+                { type = "eq", left = { type = "variable", name = var }, right = { type = "func", name = "ln", args = { r } } }
+            }
+        end
+        -- ln(x) = a → x=exp(a)
+        if l.type == "func" and l.name == "ln" and isVar(l.args[1], var) and isNum(r) then
+            return {
+                { type = "eq", left = { type = "variable", name = var }, right = { type = "func", name = "exp", args = { r } } }
+            }
+        end
+        -- a^x = b → x=ln(b)/ln(a)
+        if l.type == "power" and isNum(l.left) and isVar(l.right, var) and isNum(r) and l.left.value > 0 and r.value > 0 then
+            return {
+                { type = "eq", left = { type = "variable", name = var }, right = { type = "div", left = { type = "func", name = "ln", args = { r } }, right = { type = "func", name = "ln", args = { l.left } } } }
+            }
+        end
+    end
+    return nil
+end
+
+-- Fallback: Newton's method (symbolic evaluation if possible)
+local function newtonSolve(eq, var, guess, maxiter)
+    maxiter = maxiter or 8
+    local x = guess or 1
+    for i=1,maxiter do
+        -- Numerical derivative by h
+        local h = 1e-7
+        local env = {}; env[var]=x
+        local f = eval({type="sub", left=eq.left, right=eq.right}, env)
+        local f1 = eval({type="sub", left=eq.left, right=eq.right}, (function() local e = {}; for k,v in pairs(env) do e[k]=v end; e[var]=x+h; return e end)())
+        local dfdx = (f1-f)/h
+        if math.abs(dfdx) < 1e-10 then break end
+        local xnew = x - f/dfdx
+        if math.abs(xnew-x) < 1e-10 then return xnew end
+        x = xnew
+    end
+    return x
+end
+
+-- Top-level solve function (input: AST or string, variable name optional)
+function solve(ast, var)
+    -- Convert string input to AST if needed
+    if type(ast) == "string" then
+        if not buildAST then error("buildAST() not defined") end
+        ast = buildAST(tokenize(ast))
+    end
+    -- Extract equation: make sure it's type="eq"
+    if ast.type ~= "eq" then
+        -- Try to treat as expr=0
+        ast = { type="eq", left=ast, right={type="number", value=0} }
+    end
+    var = var or (function()
+        -- try to guess variable
+        local function findVar(node)
+            if node.type == "variable" then return node.name end
+            for _,k in ipairs{"left","right","value","args"} do
+                if node[k] then
+                    if type(node[k]) == "table" then
+                        local res = findVar(node[k])
+                        if res then return res end
+                    elseif type(node[k]) == "table" then
+                        for _,v in ipairs(node[k]) do
+                            local res = findVar(v)
+                            if res then return res end
+                        end
+                    end
+                end
+            end
+            return nil
+        end
+        return findVar(ast.left) or findVar(ast.right) or "x"
+    end)()
+
+    -- Canonicalize and simplify left - right
+    local diff = simplify.simplify({ type = "sub", left = ast.left, right = ast.right })
+    ast = { type = "eq", left = diff, right = { type = "number", value = 0 } }
+
+    -- Try all known matchers
+    local ans = matchLinearEq(ast, var)
+    if ans then return var.." = "..tostring(ans) end
+
+    ans = matchQuadraticEq(ast, var)
+    if ans then
+        return var.."₁ = "..tostring(ans[1])..", "..var.."₂ = "..tostring(ans[2])
+    end
+
+    ans = matchCubicEq(ast, var)
+    if ans then
+        local outs = {}
+        for i,v in ipairs(ans) do outs[#outs+1] = var..tostring(i).." = "..tostring(v) end
+        return table.concat(outs, ", ")
+    end
+
+    ans = matchTrigEq(ast, var)
+    if ans then
+        if type(ans[1]) == "table" then
+            local outs = {}
+            for _,a in ipairs(ans) do table.insert(outs, astToString(a)) end
+            return table.concat(outs, ", ")
+        else
+            return table.concat(ans, ", ")
+        end
+    end
+
+    ans = matchExpLogEq(ast, var)
+    if ans then
+        if type(ans[1]) == "table" then
+            local outs = {}
+            for _,a in ipairs(ans) do table.insert(outs, astToString(a)) end
+            return table.concat(outs, ", ")
+        else
+            return table.concat(ans, ", ")
+        end
+    end
+
+    -- Fallback: numerical
+    local xnum = newtonSolve(ast, var)
+    if xnum then
+        return var.." ≈ "..tostring(xnum)
+    end
+
+    return "No solution found"
+end
+
+_G.solve = solve
+
+-- End src/solve.lua
+
+-- Begin src/factorial.lua
+-- factorial.lua
+-- Symbolic factorial using the Gamma function
+-- Assumes input is an AST with type = "func" and name = "factorial"
+local function factorial(n)
+  assert(n >= 0 and math.floor(n) == n, "factorial only defined for non-negative integers")
+  local result = 1
+  for i = 2, n do result = result * i end
+  return result
+end
+
+local function matchFactorial(ast)
+  if ast.type == "func" and ast.name == "factorial" and ast.args and #ast.args == 1 then
+    local arg = ast.args[1]
+    -- Convert factorial(n) to gamma(n+1)
+    return {
+      type = "func",
+      name = "gamma",
+      args = {
+        {
+          type = "add",
+          args = { arg, { type = "number", value = 1 } }  -- ← Fixed: Use args array
+        }
+      }
+    }
+  end
+  return ast
+end
+
+-- Replace factorials recursively in an AST
+function transformFactorial(ast)
+  if type(ast) ~= "table" then return ast end
+  
+  -- Transform factorial(n) → gamma(n+1)
+  if ast.type == "func" and ast.name == "factorial" and ast.args and #ast.args == 1 then
+    local arg = transformFactorial(ast.args[1])
+    return {
+      type = "func",
+      name = "gamma",
+      args = {
+        {
+          type = "add",
+          args = { arg, { type = "number", value = 1 } }  -- ← Fixed: Use args array
+        }
+      }
+    }
+  end
+  
+  local out = {}
+  for k, v in pairs(ast) do
+    if type(v) == "table" then
+      if #v > 0 then
+        out[k] = {}
+        for i = 1, #v do
+          out[k][i] = transformFactorial(v[i])
+        end
+      else
+        out[k] = transformFactorial(v)
+      end
+    else
+      out[k] = v
+    end
+  end
+  return out
+end
+
+_G.transformFactorial = transformFactorial
+
+-- End src/factorial.lua
+
+-- Begin src/gui.lua
+
+local parser = rawget(_G, "parser")
+if not parser or not parser.parse then
+  error("parser module or parser.parse not defined — ensure parser.lua is loaded before gui.lua")
+end
+local parse = parser.parse
+local simplify = rawget(_G, "simplify")
+-- Ensure compatibility with Lua 5.2+ where unpack is table.unpack
+unpack = unpack or table.unpack
+-- ETK View System (copied from S2.lua)
+defaultFocus = nil
+
+View = class()
+
+function View:init(window)
+	self.window = window
+	self.widgetList = {}
+	self.focusList = {}
+	self.currentFocus = 0
+	self.currentCursor = "default"
+	self.prev_mousex = 0
+	self.prev_mousey = 0
+end
+
+function View:invalidate()
+	self.window:invalidate()
+end
+
+function View:setCursor(cursor)
+	if cursor ~= self.currentCursor then
+		self.currentCursor = cursor
+		self:invalidate()
+	end
+end
+
+function View:add(o)
+	table.insert(self.widgetList, o)
+	self:repos(o)
+	if o.acceptsFocus then
+		table.insert(self.focusList, 1, o)
+		if self.currentFocus > 0 then
+			self.currentFocus = self.currentFocus + 1
+		end
+	end
+	return o
+end
+
+function View:remove(o)
+	if self:getFocus() == o then
+		o:releaseFocus()
+	end
+	local i = 1
+	local f = 0
+	while i <= #self.focusList do
+		if self.focusList[i] == o then
+			f = i
+		end
+		i = i + 1
+	end
+	if f > 0 then
+		if self:getFocus() == o then
+			self:tabForward()
+		end
+		table.remove(self.focusList, f)
+		if self.currentFocus > f then
+			self.currentFocus = self.currentFocus - 1
+		end
+	end
+	f = 0
+	i = 1
+	while i <= #self.widgetList do
+		if self.widgetList[i] == o then
+			f = i
+		end
+		i = i + 1
+	end
+	if f > 0 then
+		table.remove(self.widgetList, f)
+	end
+end
+
+function View:repos(o)
+	local x = o.x
+	local y = o.y
+	local w = o.w
+	local h = o.h
+	if o.hConstraint == "right" then
+		x = scrWidth - o.w - o.dx1
+	elseif o.hConstraint == "center" then
+		x = (scrWidth - o.w + o.dx1) / 2
+	elseif o.hConstraint == "justify" then
+		w = scrWidth - o.x - o.dx1
+	end
+	if o.vConstraint == "bottom" then
+		y = scrHeight - o.h - o.dy1
+	elseif o.vConstraint == "middle" then
+		y = (scrHeight - o.h + o.dy1) / 2
+	elseif o.vConstraint == "justify" then
+		h = scrHeight - o.y - o.dy1
+	end
+	o:repos(x, y)
+	o:resize(w, h)
+end
+
+function View:resize()
+	for _, o in ipairs(self.widgetList) do
+		self:repos(o)
+	end
+end
+
+function View:hide(o)
+	if o.visible then
+		o.visible = false
+		self:releaseFocus(o)
+		if o:contains(self.prev_mousex, self.prev_mousey) then
+			o:onMouseLeave(o.x - 1, o.y - 1)
+		end
+		self:invalidate()
+	end
+end
+
+function View:show(o)
+	if not o.visible then
+		o.visible = true
+		if o:contains(self.prev_mousex, self.prev_mousey) then
+			o:onMouseEnter(self.prev_mousex, self.prev_mousey)
+		end
+		self:invalidate()
+	end
+end
+
+function View:getFocus()
+	if self.currentFocus == 0 then
+		return nil
+	end
+	return self.focusList[self.currentFocus]
+end
+
+function View:setFocus(obj)
+	if self.currentFocus ~= 0 then
+		if self.focusList[self.currentFocus] == obj then
+			return
+		end
+		self.focusList[self.currentFocus]:releaseFocus()
+	end
+	self.currentFocus = 0
+	for i = 1, #self.focusList do
+		if self.focusList[i] == obj then
+			self.currentFocus = i
+			obj:setFocus()
+			self:invalidate()
+			break
+		end
+	end
+end
+
+function View:releaseFocus(obj)
+	if self.currentFocus ~= 0 then
+		if self.focusList[self.currentFocus] == obj then
+			self.currentFocus = 0
+			obj:releaseFocus()
+			self:invalidate()
+		end
+	end
+end
+
+function View:sendStringToFocus(str)
+	local o = self:getFocus()
+	if not o then
+		o = defaultFocus
+		self:setFocus(o)
+	end
+	if o then
+		if o.visible then
+			if o:addString(str) then
+				self:invalidate()
+			else
+				o = nil
+			end
+		end
+	end
+
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible then
+				if o:addString(str) then
+					self:setFocus(o)
+					self:invalidate()
+					break
+				end
+			end
+		end
+	end
+end
+
+function View:backSpaceHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsBackSpace then
+			o:backSpaceHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsBackSpace then
+				o:backSpaceHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:tabForward()
+	local nextFocus = self.currentFocus + 1
+	if nextFocus > #self.focusList then
+		nextFocus = 1
+	end
+	self:setFocus(self.focusList[nextFocus])
+	if self:getFocus() then
+		if not self:getFocus().visible then
+			self:tabForward()
+		end
+	end
+	self:invalidate()
+end
+
+function View:tabBackward()
+	local nextFocus = self.currentFocus - 1
+	if nextFocus < 1 then
+		nextFocus = #self.focusList
+	end
+	self:setFocus(self.focusList[nextFocus])
+	if not self:getFocus().visible then
+		self:tabBackward()
+	end
+	self:invalidate()
+end
+
+function View:onMouseDown(x, y)
+	for _, o in ipairs(self.widgetList) do
+		if o.visible and o.acceptsFocus and o:contains(x, y) then
+			self.mouseCaptured = o
+			o:onMouseDown(o, window, x - o.x, y - o.y)
+			self:setFocus(o)
+			self:invalidate()
+			return
+		end
+	end
+	if self:getFocus() then
+		self:setFocus(nil)
+		self:invalidate()
+	end
+end
+
+function View:onMouseMove(x, y)
+	local prev_mousex = self.prev_mousex
+	local prev_mousey = self.prev_mousey
+	for _, o in ipairs(self.widgetList) do
+		local xyin = o:contains(x, y)
+		local prev_xyin = o:contains(prev_mousex, prev_mousey)
+		if xyin and not prev_xyin and o.visible then
+			o:onMouseEnter(x, y)
+			self:invalidate()
+		elseif prev_xyin and (not xyin or not o.visible) then
+			o:onMouseLeave(x, y)
+			self:invalidate()
+		end
+	end
+	self.prev_mousex = x
+	self.prev_mousey = y
+end
+
+function View:onMouseUp(x, y)
+	local mc = self.mouseCaptured
+	if mc then
+		self.mouseCaptured = nil
+		if mc:contains(x, y) then
+			mc:onMouseUp(x - mc.x, y - mc.y)
+		end
+	end
+end
+
+function View:enterHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsEnter then
+			o:enterHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsEnter then
+				o:enterHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowLeftHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowLeft then
+			o:arrowLeftHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowLeft then
+				o:arrowLeftHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowRightHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowRight then
+			o:arrowRightHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowRight then
+				o:arrowRightHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowUpHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowUp then
+			o:arrowUpHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowUp then
+				o:arrowUpHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:arrowDownHandler()
+	local o = self:getFocus()
+	if o then
+		if o.visible and o.acceptsArrowDown then
+			o:arrowDownHandler()
+			self:setFocus(o)
+			self:invalidate()
+		else
+			o = nil
+		end
+	end
+	if not o then
+		for _, o in ipairs(self.focusList) do
+			if o.visible and o.acceptsArrowDown then
+				o:arrowDownHandler()
+				self:setFocus(o)
+				self:invalidate()
+				break
+			end
+		end
+	end
+end
+
+function View:paint(gc)
+	local fo = self:getFocus()
+	for _, o in ipairs(self.widgetList) do
+		if o.visible then
+			o:paint(gc, fo == o)
+			if fo == o then
+				gc:setColorRGB(100, 150, 255)
+				gc:drawRect(o.x - 1, o.y - 1, o.w + 1, o.h + 1)
+				gc:setPen("thin", "smooth")
+				gc:setColorRGB(0, 0, 0)
+			end
+		end
+	end
+	cursor.set(self.currentCursor)
+end
+
+theView = nil
+
+Widget = class()
+
+function Widget:setHConstraints(hConstraint, dx1)
+	self.hConstraint = hConstraint
+	self.dx1 = dx1
+end
+
+function Widget:setVConstraints(vConstraint, dy1)
+	self.vConstraint = vConstraint
+	self.dy1 = dy1
+end
+
+function Widget:init(view, x, y, w, h)
+	self.xOrig = x
+	self.yOrig = y
+	self.view = view
+	self.x = x
+	self.y = y
+	self.w = w
+	self.h = h
+	self.acceptsFocus = false
+	self.visible = true
+	self.acceptsEnter = false
+	self.acceptsEscape = false
+	self.acceptsTab = false
+	self.acceptsDelete = false
+	self.acceptsBackSpace = false
+	self.acceptsReturn = false
+	self.acceptsArrowUp = false
+	self.acceptsArrowDown = false
+	self.acceptsArrowLeft = false
+	self.acceptsArrowRight = false
+	self.hConstraint = "left"
+	self.vConstraint = "top"
+end
+
+function Widget:repos(x, y)
+	self.x = x
+	self.y = y
+end
+
+function Widget:resize(w, h)
+	self.w = w
+	self.h = h
+end
+
+function Widget:setFocus() end
+function Widget:releaseFocus() end
+
+function Widget:contains(x, y)
+	return x >= self.x and x <= self.x + self.w
+			and y >= self.y and y <= self.y + self.h
+end
+
+function Widget:onMouseEnter(x, y) end
+function Widget:onMouseLeave(x, y) end
+function Widget:paint(gc, focused) end
+function Widget:enterHandler() end
+function Widget:escapeHandler() end
+function Widget:tabHandler() end
+function Widget:deleteHandler() end
+function Widget:backSpaceHandler() end
+function Widget:returnHandler() end
+function Widget:arrowUpHandler() end
+function Widget:arrowDownHandler() end
+function Widget:arrowLeftHandler() end
+function Widget:arrowRightHandler() end
+function Widget:onMouseDown(x, y) end
+function Widget:onMouseUp(x, y) end
+
+Button = class(Widget)
+
+function Button:init(view, x, y, w, h, default, command, shortcut)
+	Widget.init(self, view, x, y, w, h)
+	self.acceptsFocus = true
+	self.command = command or function() end
+	self.default = default
+	self.shortcut = shortcut
+	self.clicked = false
+	self.highlighted = false
+	self.acceptsEnter = true
+end
+
+function Button:enterHandler()
+	if self.acceptsEnter then
+		self:command()
+	end
+end
+
+function Button:escapeHandler()
+	if self.acceptsEscape then
+		self:command()
+	end
+end
+
+function Button:tabHandler()
+	if self.acceptsTab then
+		self:command()
+	end
+end
+
+function Button:deleteHandler()
+	if self.acceptsDelete then
+		self:command()
+	end
+end
+
+function Button:backSpaceHandler()
+	if self.acceptsBackSpace then
+		self:command()
+	end
+end
+
+function Button:returnHandler()
+	if self.acceptsReturn then
+		self:command()
+	end
+end
+
+function Button:arrowUpHandler()
+	if self.acceptsArrowUp then
+		self:command()
+	end
+end
+
+function Button:arrowDownHandler()
+	if self.acceptsArrowDown then
+		self:command()
+	end
+end
+
+function Button:arrowLeftHandler()
+	if self.acceptsArrowLeft then
+		self:command()
+	end
+end
+
+function Button:arrowRightHandler()
+	if self.acceptsArrowRight then
+		self:command()
+	end
+end
+
+function Button:onMouseDown(x, y)
+	self.clicked = true
+	self.highlighted = true
+end
+
+function Button:onMouseEnter(x, y)
+	theView:setCursor("hand pointer")
+	if self.clicked and not self.highlighted then
+		self.highlighted = true
+	end
+end
+
+function Button:onMouseLeave(x, y)
+	theView:setCursor("default")
+	if self.clicked and self.highlighted then
+		self.highlighted = false
+	end
+end
+
+function Button:cancelClick()
+	if self.clicked then
+		self.highlighted = false
+		self.clicked = false
+	end
+end
+
+function Button:onMouseUp(x, y)
+	self:cancelClick()
+	self:command()
+end
+
+function Button:addString(str)
+	if str == " " or str == self.shortcut then
+		self:command()
+		return true
+	end
+	return false
+end
+
+ImgLabel = class(Widget)
+
+function ImgLabel:init(view, x, y, img)
+	self.img = image.new(img)
+	self.w = image.width(self.img)
+	self.h = image.height(self.img)
+	Widget.init(self, view, x, y, self.w, self.h)
+end
+
+function ImgLabel:paint(gc, focused)
+	gc:drawImage(self.img, self.x, self.y)
+end
+
+ImgButton = class(Button)
+
+function ImgButton:init(view, x, y, img, command, shortcut)
+	self.img = image.new(img)
+	self.w = image.width(self.img)
+	self.h = image.height(self.img)
+	Button.init(self, view, x, y, self.w, self.h, false, command, shortcut)
+end
+
+function ImgButton:paint(gc, focused)
+	gc:drawImage(self.img, self.x, self.y)
+end
+
+TextButton = class(Button)
+
+function TextButton:init(view, x, y, text, command, shortcut)
+	self.textid = text
+	self.text = getLocaleText(text)
+	self:resize(0, 0)
+	Button.init(self, view, x, y, self.w, self.h, false, command, shortcut)
+end
+
+function TextButton:resize(w, h)
+	self.text = getLocaleText(self.textid)
+	self.w = getStringWidth(self.text) + 5
+	self.h = getStringHeight(self.text) + 5
+end
+
+function TextButton:paint(gc, focused)
+	gc:setColorRGB(223, 223, 223)
+	gc:drawRect(self.x + 1, self.y + 1, self.w - 2, self.h - 2)
+	gc:setColorRGB(191, 191, 191)
+	gc:fillRect(self.x + 1, self.y + 1, self.w - 3, self.h - 3)
+	gc:setColorRGB(223, 223, 223)
+	gc:drawString(self.text, self.x + 3, self.y + 3, "top")
+	gc:setColorRGB(0, 0, 0)
+	gc:drawString(self.text, self.x + 2, self.y + 2, "top")
+	gc:drawRect(self.x, self.y, self.w - 2, self.h - 2)
+end
+
+VScrollBar = class(Widget)
+
+function VScrollBar:init(view, x, y, w, h)
+	self.pos = 10
+	self.siz = 10
+	Widget.init(self, view, x, y, w, h)
+end
+
+function VScrollBar:paint(gc, focused)
+	gc:setColorRGB(0, 0, 0)
+	gc:drawRect(self.x, self.y, self.w, self.h)
+	gc:fillRect(self.x + 2, self.y + self.h - (self.h - 4) * (self.pos + self.siz) / 100 - 2, self.w - 3, math.max(1, (self.h - 4) * self.siz / 100 + 1))
+end
+
+TextLabel = class(Widget)
+
+function TextLabel:init(view, x, y, text)
+	self:setText(text)
+	Widget.init(self, view, x, y, self.w, self.h)
+end
+
+function TextLabel:resize(w, h)
+	self.text = getLocaleText(self.textid)
+	self.w = getStringWidth(self.text)
+	self.h = getStringHeight(self.text)
+end
+
+function TextLabel:setText(text)
+	self.textid = text
+	self.text = getLocaleText(text)
+	self:resize(0, 0)
+end
+
+function TextLabel:getText()
+	return self.text
+end
+
+function TextLabel:paint(gc, focused)
+	gc:setColorRGB(0, 0, 0)
+	gc:drawString(self.text, self.x, self.y, "top")
+end
+
+RichTextEditor = class(Widget)
+
+function RichTextEditor:init(view, x, y, w, h, text)
+	self.editor = D2Editor.newRichText()
+	self.readOnly = false
+	self:repos(x, y)
+	self.editor:setFontSize(fsize)
+	self.editor:setFocus(false)
+	self.text = text
+	self:resize(w, h)
+	Widget.init(self, view, x, y, self.w, self.h, true)
+	self.acceptsFocus = true
+	self.editor:setExpression(text)
+	self.editor:setBorder(1)
+end
+
+function RichTextEditor:onMouseEnter(x, y)
+	theView:setCursor("text")
+end
+
+function RichTextEditor:onMouseLeave(x, y)
+	theView:setCursor("default")
+end
+
+function RichTextEditor:repos(x, y)
+	if not self.editor then return end
+	self.editor:setBorderColor((showEditorsBorders and 0) or 0xffffff )
+	self.editor:move(x, y)
+	Widget.repos(self, x, y)
+end
+
+function RichTextEditor:resize(w, h)
+	if not self.editor then return end
+	self.editor:resize(w, h)
+	Widget.resize(self, w, h)
+end
+
+function RichTextEditor:setFocus()
+	self.editor:setFocus(true)
+end
+
+function RichTextEditor:releaseFocus()
+	self.editor:setFocus(false)
+end
+
+function RichTextEditor:addString(str)
+	local currentText = self.editor:getText() or ""
+	self.editor:setText(currentText .. str)
+	return true
+end
+
+function RichTextEditor:paint(gc, focused) end
+
+MathEditor = class(RichTextEditor)
+
+function ulen(str)
+	if not str then return 0 end
+	local n = string.len(str)
+	local i = 1
+	local j = 1
+	local c
+	while (j <= n) do
+		c = string.len(string.usub(str, i, i))
+		j = j + c
+		i = i + 1
+	end
+	return i - 1
+end
+
+function MathEditor:init(view, x, y, w, h, text)
+	RichTextEditor.init(self, view, x, y, w, h, text)
+	self.editor:setBorder(1)
+	self.acceptsEnter = true
+	self.acceptsBackSpace = true
+	self.result = false
+	self.editor:registerFilter({
+		arrowLeft = function()
+			_, curpos = self.editor:getExpressionSelection()
+			if curpos < 7 then
+				on.arrowLeft()
+				return true
+			end
+			return false
+		end,
+		arrowRight = function()
+			currentText, curpos = self.editor:getExpressionSelection()
+			if curpos > ulen(currentText) - 2 then
+				on.arrowRight()
+				return true
+			end
+			return false
+		end,
+		tabKey = function()
+			theView:tabForward()
+			return true
+		end,
+		mouseDown = function(x, y)
+			theView:onMouseDown(x, y)
+			return false
+		end,
+		backspaceKey = function()
+			if (self == fctEditor) then
+				self:fixCursor()
+				_, curpos = self.editor:getExpressionSelection()
+				if curpos <= 6 then return true end
+				return false
+			else
+				self:backSpaceHandler()
+				return true
+			end
+		end,
+		deleteKey = function()
+			if (self == fctEditor) then
+				self:fixCursor()
+				currentText, curpos = self.editor:getExpressionSelection()
+				if curpos >= ulen(currentText) - 1 then return true end
+				return false
+			else
+				self:backSpaceHandler()
+				return true
+			end
+		end,
+		enterKey = function()
+			self:enterHandler()
+			return true
+		end,
+		returnKey = function()
+			theView:enterHandler()
+			return true
+		end,
+		escapeKey = function()
+			on.escapeKey()
+			return true
+		end,
+		charIn = function(c)
+			if (self == fctEditor) then
+				self:fixCursor()
+				return false
+			else
+				return self.readOnly
+			end
+		end
+	})
+end
+
+function MathEditor:fixContent()
+	local currentText = self.editor:getExpressionSelection()
+	if currentText == "" or currentText == nil then
+		self.editor:createMathBox()
+	end
+end
+
+function MathEditor:fixCursor()
+	local currentText, curpos, selstart = self.editor:getExpressionSelection()
+	local l = ulen(currentText)
+	if curpos < 6 or selstart < 6 or curpos > l - 1 or selstart > l - 1 then
+		if curpos < 6 then curpos = 6 end
+		if selstart < 6 then selstart = 6 end
+		if curpos > l - 1 then curpos = l - 1 end
+		if selstart > l - 1 then selstart = l - 1 end
+		self.editor:setExpression(currentText, curpos, selstart)
+	end
+end
+
+function MathEditor:getExpression()
+	if not self.editor then return "" end
+	local rawexpr = self.editor:getExpression()
+	local expr = ""
+	local n = string.len(rawexpr)
+	local b = 0
+	local bs = 0
+	local bi = 0
+	local status = 0
+	local i = 1
+	while i <= n do
+		local c = string.sub(rawexpr, i, i)
+		if c == "{" then
+			b = b + 1
+		elseif c == "}" then
+			b = b - 1
+		end
+		if status == 0 then
+			if string.sub(rawexpr, i, i + 5) == "\\0el {" then
+				bs = i + 6
+				i = i + 5
+				status = 1
+				bi = b
+				b = b + 1
+			end
+		else
+			if b == bi then
+				status = 0
+				expr = expr .. string.sub(rawexpr, bs, i - 1)
+			end
+		end
+		i = i + 1
+	end
+	return expr
+end
+
+function MathEditor:setFocus()
+	if not self.editor then return end
+	self.editor:setFocus(true)
+end
+
+function MathEditor:releaseFocus()
+	if not self.editor then return end
+	self.editor:setFocus(false)
+end
+
+function MathEditor:addString(str)
+	if not self.editor then return false end
+	self:fixCursor()
+	local currentText, curpos, selstart = self.editor:getExpressionSelection()
+	local newText = string.usub(currentText, 1, math.min(curpos, selstart)) .. str .. string.usub(currentText, math.max(curpos, selstart) + 1, ulen(currentText))
+	self.editor:setExpression(newText, math.min(curpos, selstart) + ulen(str))
+	return true
+end
+
+function MathEditor:backSpaceHandler()
+    -- No-op or custom deletion logic (history removal not implemented)
+end
+
+function MathEditor:enterHandler()
+    -- Call the custom on.enterKey handler instead of missing global
+    on.enterKey()
+end
+
+function MathEditor:paint(gc)
+	if showHLines and not self.result then
+		gc:setColorRGB(100, 100, 100)
+		local ycoord = self.y - (showEditorsBorders and 0 or 2)
+		gc:drawLine(1, ycoord, platform.window:width() - sbv.w - 2, ycoord)
+		gc:setColorRGB(0, 0, 0)
+	end
+end
+
+function on.arrowUp()
+  if theView then
+    if theView:getFocus() == fctEditor then
+      on.tabKey()
+    else
+      on.tabKey()
+      if theView:getFocus() ~= fctEditor then on.tabKey() end
+    end
+    reposView()
+  end
+end
+
+function on.arrowDown()
+  if theView then
+    on.backtabKey()
+    if theView:getFocus() ~= fctEditor then on.backtabKey() end
+    reposView()
+  end
+end
+
+function on.arrowLeft()
+  if theView then
+    on.tabKey()
+    reposView()
+  end
+end
+
+function on.arrowRight()
+  if theView then
+    on.backtabKey()
+    reposView()
+  end
+end
+
+function on.charIn(ch)
+  if theView then theView:sendStringToFocus(ch) end
+end
+
+function on.tabKey()
+  if theView then theView:tabForward(); reposView() end
+end
+
+function on.backtabKey()
+  if theView then theView:tabBackward(); reposView() end
+end
+
+function on.enterKey()
+  if not fctEditor or not fctEditor.getExpression then return end
+
+  local input = fctEditor:getExpression()
+  -- Fix TI-style derivative notation like ((d)/(dx(x^2))) to diff(x^2, x)
+  input = input:gsub("%(%(d%)%)%/%(d([a-zA-Z])%((.-)%)%)%)", function(var, inner)
+    _G.__diff_var = var
+    return inner
+  end)
+  if not input or input == "" then return end
+
+  -- Remove all whitespace from input
+  input = input:gsub("%s+", "")
+
+  local result = ""
+  _G.luaCASerror = false
+  local success, err = pcall(function()
+    if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
+      local expr = input:match("d/d[xy]%((.+)%)")
+      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
+    elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
+      local expr = input:match("∂/∂x%((.+)%)")
+      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
+    elseif input:match("^∂/∂[yz]%(.+%)$") then
+      result = derivative(input, _G.__diff_var)
+    elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
+      result = integrate(parse(input:sub(4, -3)))
+    elseif input:sub(1,4) == "int(" and input:sub(-1) == ")" then
+      local expr = input:match("int%((.+)%)")
+      result = expr and integrate(parse(expr)) or "Invalid format"
+      if result == "Invalid format" then _G.luaCASerror = true end
+    elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
+      local eqn = input:match("solve%((.+)%)")
+      if eqn and not eqn:find("=") then
+        eqn = eqn .. "=0"
+      end
+      result = eqn and solve(parse(eqn)) or "Invalid solve format"
+      if result == "Invalid solve format" then _G.luaCASerror = true end
+    elseif input:sub(1,4) == "let" then
+      result = define(input)
+    elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
+        local inner = input:match("expand%((.+)%)")
+        result = inner and expand(parse(inner)) or "Invalid expand format"
+        if result == "Invalid expand format" then _G.luaCASerror = true end
+    elseif input:sub(1,5) == "subs(" and input:sub(-1) == ")" then
+        local inner, var, val = input:match("subs%(([^,]+),([^,]+),([^%)]+)%)")
+        result = (inner and var and val) and subs(parse(inner), var, val) or "Invalid subs format"
+        if result == "Invalid subs format" then _G.luaCASerror = true end
+    elseif input:sub(1,7) == "factor(" and input:sub(-1) == ")" then
+        local inner = input:match("factor%((.+)%)")
+        result = inner and factor(parse(inner)) or "Invalid factor format"
+        if result == "Invalid factor format" then _G.luaCASerror = true end
+    elseif input:sub(1,4) == "gcd(" and input:sub(-1) == ")" then
+        local a, b = input:match("gcd%(([^,]+),([^%)]+)%)")
+        result = (a and b) and gcd(parse(a), parse(b)) or "Invalid gcd format"
+        if result == "Invalid gcd format" then _G.luaCASerror = true end
+    elseif input:sub(1,4) == "lcm(" and input:sub(-1) == ")" then
+        local a, b = input:match("lcm%(([^,]+),([^%)]+)%)")
+        result = (a and b) and lcm(parse(a), parse(b)) or "Invalid lcm format"
+        if result == "Invalid lcm format" then _G.luaCASerror = true end
+    elseif input:sub(1,7) == "trigid(" and input:sub(-1) == ")" then
+        local inner = input:match("trigid%((.+)%)")
+        result = inner and trigid(parse(inner)) or "Invalid trigid format"
+        if result == "Invalid trigid format" then _G.luaCASerror = true end
+    elseif input:match("%w+%(.+%)") then
+      result = simplify.simplify(parse(input))
+    elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
+      local inner = input:match("simplify%((.+)%)")
+      result = inner and simplify.simplify(parse(inner)) or "Invalid simplify format"
+      if result == "Invalid simplify format" then _G.luaCASerror = true end
+    -- Fallback parser for diff(...) and integrate(...)
+    elseif input:match("^diff%(([^,]+),([^,%)]+)%)$") then
+      local a, b = input:match("^diff%(([^,]+),([^,%)]+)%)$")
+      result = (a and b) and derivative(parse(a), b) or "Invalid diff() format"
+      if result == "Invalid diff() format" then _G.luaCASerror = true end
+    elseif _G.__diff_var then
+      result = derivative(input, _G.__diff_var)
+      _G.__diff_var = nil
+    elseif input:match("^integrate%(([^,]+),([^,%)]+)%)$") then
+      local a, b = input:match("^integrate%(([^,]+),([^,%)]+)%)$")
+      result = (a and b) and integrate(parse(a), b) or "Invalid integrate() format"
+      if result == "Invalid integrate() format" then _G.luaCASerror = true end
+    else
+      result = simplify.simplify(parse(input))
+    end
+    if result == "" or not result then
+      result = "No result. Internal CAS fallback used."
+    end
+  end)
+  if not success then
+    result = "Error: " .. tostring(err)
+    _G.luaCASerror = true
+  end
+
+  -- Add to history display
+  local colorHint = (_G.luaCASerror and "error") or "normal"
+  addME(input, result, colorHint)
+
+  -- Clear the input editor and ready for next input
+  if fctEditor and fctEditor.editor then
+    fctEditor.editor:setText("")
+    fctEditor:fixContent()
+  end
+
+  -- Redraw UI
+  if platform and platform.window and platform.window.invalidate then
+    platform.window:invalidate()
+  end
+
+  -- Optionally save last result globally if needed
+  if type(result) == "table" then
+    if _G.ast and _G.ast.tostring then
+      result = _G.ast.tostring(result)
+    else
+      result = "(unrenderable result)"
+    end
+  end
+  res = result
+end
+
+function on.returnKey()
+  on.enterKey()
+end
+
+function on.mouseMove(x, y)
+  if theView then theView:onMouseMove(x, y) end
+end
+
+function on.mouseDown(x, y)
+  if theView then theView:onMouseDown(x, y) end
+end
+
+function on.mouseUp(x, y)
+  if theView then theView:onMouseUp(x, y) end
+end
+
+function initFontGC(gc)
+	gc:setFont(font, style, fsize)
+end
+
+function getStringHeightGC(text, gc)
+	initFontGC(gc)
+	return gc:getStringHeight(text)
+end
+
+function getStringHeight(text)
+	return platform.withGC(getStringHeightGC, text)
+end
+
+function getStringWidthGC(text, gc)
+	initFontGC(gc)
+	return gc:getStringWidth(text)
+end
+
+function getStringWidth(text)
+	return platform.withGC(getStringWidthGC, text)
+end
+
+
+----------------------------------------------------------------------
+--                           History Layout                           --
+----------------------------------------------------------------------
+
+-- Find the “partner” editor for a history entry
+function getParME(editor)
+    for i = 1, #histME2 do
+        if histME2[i].editor == editor then
+            return histME1[i]
+        end
+    end
+    return nil
+end
+
+-- Map a D2Editor instance back to its MathEditor wrapper
+function getME(editor)
+    if fctEditor and fctEditor.editor == editor then
+        return fctEditor
+    else
+        for i = 1, #histME1 do
+            if histME1[i].editor == editor then
+                return histME1[i]
+            end
+        end
+        for i = 1, #histME2 do
+            if histME2[i].editor == editor then
+                return histME2[i]
+            end
+        end
+    end
+    return nil
+end
+
+-- Get the “index” of a given MathEditor in the history stack
+function getMEindex(me)
+    if fctEditor and fctEditor.editor == me then
+        return 0
+    else
+        local ti = 0
+        for i = #histME1, 1, -1 do
+            if histME1[i] == me then
+                return ti
+            end
+            ti = ti + 1
+        end
+        ti = 0
+        for i = #histME2, 1, -1 do
+            if histME2[i] == me then
+                return ti
+            end
+            ti = ti + 1
+        end
+    end
+    return 0
+end
+
+-- Global offset for history scrolling
+ioffset = 0
+
+function reposView()
+    local focusedME = theView:getFocus()
+    if not focusedME or focusedME == fctEditor then return end
+
+    local index = getMEindex(focusedME)
+    local maxIterations = 10 -- prevent infinite loops
+    for _ = 1, maxIterations do
+        local y = focusedME.y
+        local h = focusedME.h
+        local y0 = fctEditor.y
+
+        if y < 0 and ioffset < index then
+            ioffset = ioffset + 1
+            reposME()
+        elseif y + h > y0 and ioffset > index then
+            ioffset = ioffset - 1
+            reposME()
+        else
+            break
+        end
+    end
+end
+
+-- When a history editor resizes, lay out paired entries side-by-side
+function resizeMEpar(editor, w, h)
+    local pare = getParME(editor)
+    if pare then
+        resizeMElim(editor, w, h, pare.w + (pare.dx1 or 0) * 2)
+    else
+        resizeME(editor, w, h)
+    end
+end
+
+-- Generic resize for any MathEditor
+function resizeME(editor, w, h)
+    if not editor then return end
+    resizeMElim(editor, w, h, scrWidth / 2)
+end
+
+-- Internal workhorse for resizing (limits width, then calls reposME)
+function resizeMElim(editor, w, h, lim)
+    if not editor then return end
+    local met = getME(editor)
+    if met then
+        met.needw = w
+        met.needh = h
+        w = math.max(w, 0)
+        w = math.min(w, scrWidth - (met.dx1 or 0) * 2)
+        if met ~= fctEditor then
+            w = math.min(w, (scrWidth - lim) - 2 * (met.dx1 or 0) + 1)
+        end
+        h = math.max(h, strFullHeight + 8)
+        met:resize(w, h)
+        reposME()
+        theView:invalidate()
+    end
+    return editor
+end
+
+-- “Scroll” and reflow all history MathEditors on screen
+function reposME()
+    local totalh, beforeh, visih = 0, 0, 0
+
+    -- First, position the input editor at the bottom
+    fctEditor.y = scrHeight - fctEditor.h
+    theView:repos(fctEditor)
+
+    -- Update scrollbar to fill from input up
+    sbv:setVConstraints("justify", scrHeight - fctEditor.y + border)
+    theView:repos(sbv)
+
+    local y = fctEditor.y
+    local i0 = math.max(#histME1, #histME2)
+
+    for i = i0, 1, -1 do
+        local h1, h2 = 0, 0
+        if i <= #histME1 then h1 = math.max(h1, histME1[i].h) end
+        if i <= #histME2 then h2 = math.max(h2, histME2[i].h) end
+        local h = math.max(h1, h2)
+
+        local ry
+        if (i0 - i) >= ioffset then
+            if y >= 0 then
+                if y >= h + border then
+                    visih = visih + h + border
+                else
+                    visih = visih + y
+                end
+            end
+            y = y - h - border
+            ry = y
+            totalh = totalh + h + border
+        else
+            ry = scrHeight
+            beforeh = beforeh + h + border
+            totalh = totalh + h + border
+        end
+
+        -- Place the “expression” editor on the left
+        if i <= #histME1 then
+            histME1[i].y = ry
+            theView:repos(histME1[i])
+        end
+        -- Place its paired “result” editor on the right, vertically aligned
+        if i <= #histME2 then
+            histME2[i].y = ry + math.max(0, h1 - h2)
+            theView:repos(histME2[i])
+        end
+    end
+
+    if totalh == 0 then
+        sbv.pos = 0
+        sbv.siz = 100
+    else
+        sbv.pos = beforeh * 100 / totalh
+        sbv.siz = visih * 100 / totalh
+    end
+
+    theView:invalidate()
+end
+
+function initGUI()
+    showEditorsBorders = false
+    showHLines = true
+    -- local riscas = math.evalStr("iscas()")
+    -- if (riscas == "true") then iscas = true end
+    local id = math.eval("sslib\\getid()")
+    if id then caslib = id end
+    scrWidth = platform.window:width()
+    scrHeight = platform.window:height()
+    if scrWidth > 0 and scrHeight > 0 then
+        theView = View(platform.window)
+
+        -- Vertical scroll bar for history
+        sbv = VScrollBar(theView, 0, -1, 5, scrHeight + 1)
+        sbv:setHConstraints("right", 0)
+        theView:add(sbv)
+
+        -- Input editor at bottom (MathEditor)
+        fctEditor = MathEditor(theView, 2, border, scrWidth - 4 - sbv.w, 30, "")
+        fctEditor:setHConstraints("justify", 1)
+        fctEditor:setVConstraints("bottom", 1)
+        fctEditor.editor:setSizeChangeListener(function(editor, w, h)
+            return resizeME(editor, w, h)
+        end)
+        theView:add(fctEditor)
+        fctEditor.result = res
+        fctEditor.editor:setText("")
+        fctEditor:fixContent()
+
+        -- First-focus is input editor
+        theView:setFocus(fctEditor)
+        inited = true
+    end
+
+    toolpalette.enableCopy(true)
+    toolpalette.enablePaste(true)
+end
+
+function resizeGC(gc)
+	scrWidth = platform.window:width()
+	scrHeight = platform.window:height()
+	if not inited then
+		initGUI()
+	end
+	if inited then
+		initFontGC(gc)
+		strFullHeight = gc:getStringHeight("H")
+		strHeight = strFullHeight - 3
+		theView:resize()
+		reposME()
+		theView:invalidate()
+	end
+end
+
+function on.resize()
+	platform.withGC(resizeGC)
+end
+
+forcefocus = true
+
+function on.activate()
+	forcefocus = true
+end
+
+dispinfos = true
+
+function on.paint(gc)
+	if not inited then
+		initGUI()
+		initFontGC(gc)
+		strFullHeight = gc:getStringHeight("H")
+		strHeight = strFullHeight - 3
+	end
+	if inited then
+		-- Removed display of "Last: ..." result at the top
+		local obj = theView:getFocus()
+		initFontGC(gc)
+		if not obj then theView:setFocus(fctEditor) end
+		if (forcefocus) then
+			if obj == fctEditor then
+				fctEditor.editor:setFocus(true)
+				if fctEditor.editor:hasFocus() then forcefocus = false end
+			else
+				forcefocus = false
+			end
+		end
+		if dispinfos then
+			-- Draw status box: green if OK, red if error, always visible top left
+			local engineStatus = "LuaCAS Engine: Enabled"
+			local statusColor = {0, 127, 0} -- green
+			if _G.luaCASerror then
+				engineStatus = "LuaCAS Engine: NONE"
+				statusColor = {200, 0, 0} -- red
+			end
+			local boxX, boxY = 8, 8
+			local boxPaddingX, boxPaddingY = 10, 3
+			local fontToUse = "sansserif"
+			local fontStyle = "b"
+			local fontSize = 11
+			gc:setFont(fontToUse, fontStyle, fontSize)
+			local textW = gc:getStringWidth(engineStatus)
+			local textH = gc:getStringHeight(engineStatus)
+			gc:setColorRGB(statusColor[1], statusColor[2], statusColor[3])
+			gc:fillRect(boxX, boxY, textW + boxPaddingX * 2, textH + boxPaddingY * 2)
+			gc:setColorRGB(255,255,255)
+			gc:drawString(engineStatus, boxX + boxPaddingX, boxY + boxPaddingY, "top")
+			-- restore font for rest of UI
+			gc:setFont(font, style, fsize)
+		end
+		-- Output string fallback for "main" view
+		if true then -- "main" view block
+			local output = fctEditor and fctEditor.result
+			-- local outputStr = output or ""
+			local outputStr = (output and output ~= "") and output or "(no output)"
+			-- If you want to draw the output somewhere, do so here.
+			gc:setColorRGB(0, 127, 0)
+			gc:drawString(outputStr, 10, scrHeight - 25, "top")
+		end
+		theView:paint(gc)
+	end
+end
+
+font = "sansserif"
+style = "r"
+fsize = 9
+
+scrWidth = 0
+scrHeight = 0
+inited = false
+iscas = false
+caslib = "NONE"
+delim = " ≟ "
+border = 3
+
+strHeight = 0
+strFullHeight = 0
+
+
+
+-- Initialize empty history tables
+histME1 = {}
+histME2 = {}
+
+
+function addME(expr, res, colorHint)
+	mee = MathEditor(theView, border, border, 50, 30, "")
+	mee.readOnly = true
+	table.insert(histME1, mee)
+	mee:setHConstraints("left", border)
+	mee.editor:setSizeChangeListener(function(editor, w, h)
+		return resizeME(editor, w + 3, h)
+	end)
+	-- Set border color based on colorHint
+	if colorHint == "error" then
+		mee.editor:setBorderColor(0xFF0000) -- red
+	else
+		mee.editor:setBorderColor(0x000000)
+	end
+	mee.editor:setExpression("\\0el {" .. expr .. "}", 0)
+	mee:fixCursor()
+	mee.editor:setReadOnly(true)
+	theView:add(mee)
+
+	mer = MathEditor(theView, border, border, 50, 30, "")
+    mer.result = true
+    mer.readOnly = true
+	table.insert(histME2, mer)
+	mer:setHConstraints("right", scrWidth - sbv.x + border)
+	mer.editor:setSizeChangeListener(function(editor, w, h)
+				return resizeMEpar(editor, w + border, h)
+	end)
+	if colorHint == "error" then
+		mer.editor:setBorderColor(0xFF0000) -- red
+	else
+		mer.editor:setBorderColor(0x000000)
+	end
+    local displayRes = ""
+    if type(res) == "table" then
+      if _G.simplify and _G.simplify.pretty_print then
+        displayRes = _G.simplify.pretty_print(res)
+      elseif _G.ast and _G.ast.tostring then
+        displayRes = _G.ast.tostring(res)
+      else
+        displayRes = tostring(res)
+      end
+    else
+      displayRes = tostring(res)
+    end
+    mer.editor:setExpression("\\0el {" .. displayRes .. "}", 0)
+	mer:fixCursor()
+	mer.editor:setReadOnly(true)
+	theView:add(mer)
+	reposME()
+
+-- Any unhandled errors will cause LuaCAS Engine status to go NONE (red)
+end
+
+-- End src/gui.lua
+
