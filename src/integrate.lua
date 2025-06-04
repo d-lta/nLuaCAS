@@ -1,7 +1,7 @@
---[[
-  LuaCAS Symbolic Integration Module
-  Expanded with more heuristic rules for elementary functions.
-]]
+-- Integration Engine (stub)
+-- Exists purely to make the parser happy.
+-- No symbolic integration actually happens here — yet.
+-- Think of it as decorative scaffolding.
 
 -- Utility: Deep copy a table
 local function copy(tbl)
@@ -655,6 +655,446 @@ local function integrate(expr_str, var_str)
   end
   local result_ast = integrateAST(parsed_ast, var_str or "x")
   return simplify_fn(result_ast) -- Always try to simplify the final result
+end
+
+_G.integrate = integrate
+_G.integrateAST = integrateAST
+-- nLuaCAS Symbolic Integration Engine
+-- (c) 2024. MIT License.
+-- Core elementary integration rules, heuristics, and fallback.
+
+-- Utility: Deep copy a table
+local function copy(tbl)
+  if type(tbl) ~= "table" then return tbl end
+  local t = {}
+  for k, v in pairs(tbl) do t[k] = copy(v) end
+  return t
+end
+
+-- AST Constructors
+local function num(n) return {type="number", value=n} end
+local function sym(s) return {type="symbol", name=s} end
+local function mul_op(a, b) return {type="mul", left=a, right=b} end
+local function add_op(a, b) return {type="add", left=a, right=b} end
+local function sub(a, b) return {type="sub", left=a, right=b} end
+local function div(a, b) return {type="div", left=a, right=b} end
+local function pow(a, b) return {type="pow", left=a, right=b} end
+local function neg(u) return {type="neg", value=u} end
+local function func(fname, arg) return {type="func", name=fname, arg=arg} end
+local function raw(msg) return {type="raw", value=msg} end
+local function unevaluated_integral(expr_ast, var_ast)
+  return {type="integral", expr=expr_ast, var=var_ast}
+end
+
+-- Simplify/derivative stubs
+local simplify_fn = _G.simplify or function(ast) return ast end
+local diffAST = _G.diffAST or function(ast, var) return raw("d/d"..var.." "..tostring(ast)) end
+
+-- Basic predicates
+local function is_const(ast) return ast.type == "number" end
+local function is_zero(ast) return is_const(ast) and ast.value == 0 end
+local function is_one(ast) return is_const(ast) and ast.value == 1 end
+local function is_var(ast) return ast.type == "symbol" end
+local function is_symbol(ast, name)
+  return ast.type == "symbol" and ast.name == name
+end
+
+-- AST search for variable
+local function contains_var(node, var)
+  if not node or type(node) ~= "table" then return false end
+  if node.type == "symbol" then return node.name == var
+  elseif node.type == "number" then return false
+  elseif node.type == "neg" then return contains_var(node.value, var)
+  elseif node.type == "add" or node.type == "sub" or node.type == "mul" or node.type == "div" or node.type == "pow" then
+    return contains_var(node.left, var) or contains_var(node.right, var)
+  elseif node.type == "func" then
+    return node.arg and contains_var(node.arg, var)
+  elseif node.args and type(node.args) == "table" then
+    for _, arg in ipairs(node.args) do
+      if contains_var(arg, var) then return true end
+    end
+    return false
+  end
+  return false
+end
+
+local function is_const_wrt_var(ast, var)
+  return not contains_var(ast, var)
+end
+
+-- Linear check: a*var + b form
+local function is_linear(ast, var)
+  if is_const_wrt_var(ast, var) then return true end
+  if ast.type == "add" then
+    return (is_linear(ast.left, var) and is_const_wrt_var(ast.right, var)) or
+           (is_const_wrt_var(ast.left, var) and is_linear(ast.right, var))
+  elseif ast.type == "mul" then
+    return (is_const_wrt_var(ast.left, var) and is_symbol(ast.right, var)) or
+           (is_const_wrt_var(ast.right, var) and is_symbol(ast.left, var))
+  elseif is_symbol(ast, var) then
+    return true
+  end
+  return false
+end
+
+local function extract_linear_coeffs_ast(ast, var)
+  if is_symbol(ast, var) then return num(1), num(0)
+  elseif is_const_wrt_var(ast, var) then return num(0), copy(ast)
+  elseif ast.type == "mul" then
+    if is_const_wrt_var(ast.left, var) and is_symbol(ast.right, var) then
+      return copy(ast.left), num(0)
+    elseif is_const_wrt_var(ast.right, var) and is_symbol(ast.left, var) then
+      return copy(ast.right), num(0)
+    end
+  elseif ast.type == "add" then
+    if is_linear(ast.left, var) and is_const_wrt_var(ast.right, var) then
+      local a, b1 = extract_linear_coeffs_ast(ast.left, var)
+      return a, add_op(b1, copy(ast.right))
+    elseif is_const_wrt_var(ast.left, var) and is_linear(ast.right, var) then
+      local a, b2 = extract_linear_coeffs_ast(ast.right, var)
+      return a, add_op(copy(ast.left), b2)
+    end
+  end
+  return nil, nil
+end
+
+local function extract_linear_coeffs_numeric(ast, var)
+  local a, b = extract_linear_coeffs_ast(ast, var)
+  if a and b and is_const(a) and is_const(b) then return a.value, b.value end
+  if a and is_const(a) and is_zero(b) then return a.value, 0 end
+  return nil, nil
+end
+
+-- Substitute variable
+local function substitute_var(node_in, var_name, replacement)
+  local node = copy(node_in)
+  if node.type == "symbol" and node.name == var_name then
+    return copy(replacement)
+  elseif node.type == "neg" then
+    node.value = substitute_var(node.value, var_name, replacement)
+    return node
+  elseif node.type == "add" or node.type == "sub" or node.type == "mul" or node.type == "div" or node.type == "pow" then
+    if node.left then node.left = substitute_var(node.left, var_name, replacement) end
+    if node.right then node.right = substitute_var(node.right, var_name, replacement) end
+    return node
+  elseif node.type == "func" then
+    if node.arg then node.arg = substitute_var(node.arg, var_name, replacement) end
+    return node
+  elseif node.args and type(node.args) == "table" then
+    for i, arg in ipairs(node.args) do
+      node.args[i] = substitute_var(arg, var_name, replacement)
+    end
+    return node
+  else
+    return node
+  end
+end
+
+-- Check for raw or unevaluated integral
+local function is_raw_or_integral(ast)
+  return ast and (ast.type == "raw" or ast.type == "integral")
+end
+
+-- Integration by Parts: ∫u dv = u v - ∫v du
+local function integrate_by_parts(u, dv, var)
+  local du = diffAST(u, var)
+  if is_raw_or_integral(du) then return nil end
+  local v = integrateAST(dv, var)
+  if is_raw_or_integral(v) then return nil end
+  local vdu = simplify_fn(mul_op(copy(v), copy(du)))
+  if is_zero(vdu) then return simplify_fn(mul_op(copy(u), copy(v))) end
+  local int_vdu = integrateAST(vdu, var)
+  if is_raw_or_integral(int_vdu) then return nil end
+  return simplify_fn(sub(mul_op(copy(u), copy(v)), int_vdu))
+end
+
+-- Heuristic: integration by parts
+local function try_integration_by_parts(ast, var)
+  if ast.type ~= "mul" then return nil end
+  local t1, t2 = ast.left, ast.right
+  if not t1 or not t2 then return nil end
+  local function typ(expr, v)
+    if not contains_var(expr, v) then return "const" end
+    if expr.type == "func" and (expr.name == "log" or expr.name == "ln") then return "log" end
+    if is_symbol(expr, v) then return "alg" end
+    if expr.type == "pow" and is_symbol(expr.left, v) and is_const(expr.right) then return "alg" end
+    if expr.type == "func" and (expr.name == "sin" or expr.name == "cos" or expr.name == "tan" or expr.name == "sec" or expr.name == "csc" or expr.name == "cot") then return "trig" end
+    if expr.type == "func" and expr.name == "exp" then return "exp" end
+    return "unknown"
+  end
+  local order = {log=1, alg=2, trig=3, exp=4, unknown=99, const=100}
+  local type1, type2 = typ(t1, var), typ(t2, var)
+  local u, dv
+  if (order[type1] or 99) <= (order[type2] or 99) then u, dv = t1, t2 else u, dv = t2, t1 end
+  if typ(u, var) == "const" or typ(dv, var) == "const" then return nil end
+  return integrate_by_parts(u, dv, var)
+end
+
+-- Heuristic: u-substitution
+local function try_u_substitution(ast, var)
+  if ast.type == "mul" then
+    local f1, f2 = ast.left, ast.right
+    local function check_pair(fg, maybe_gprime, v)
+      if fg.type == "func" and fg.arg then
+        local g = fg.arg
+        local gprime = diffAST(copy(g), v)
+        if is_raw_or_integral(gprime) or is_zero(gprime) then return nil end
+        local k = simplify_fn(div(copy(maybe_gprime), copy(gprime)))
+        if is_const_wrt_var(k, v) then
+          local dummy = sym("__u")
+          local int_f_u = integrateAST(func(fg.name, dummy), dummy.name)
+          if not is_raw_or_integral(int_f_u) then
+            local res = substitute_var(int_f_u, dummy.name, g)
+            return simplify_fn(mul_op(k, res))
+          end
+        end
+      end
+      return nil
+    end
+    local r = check_pair(f1, f2, var) or check_pair(f2, f1, var)
+    if r then return r end
+  end
+  -- Pattern: g'(x) * g(x)^n
+  local function check_gpow_gprime(t1, t2, v, is_div)
+    local g, n, gprime_mult
+    if t1.type == "pow" then g = t1.left; n = t1.right; gprime_mult = t2
+    elseif not (t2.type == "pow") then g = t1; n = num(1); gprime_mult = t2 end
+    if g and n then
+      if not is_const_wrt_var(n, v) then return nil end
+      local nval = is_const(n) and n.value or nil
+      if is_div and nval then nval = -nval end
+      local gprime = diffAST(copy(g), v)
+      if is_raw_or_integral(gprime) or is_zero(gprime) then return nil end
+      local k = simplify_fn(div(copy(gprime_mult), copy(gprime)))
+      if is_const_wrt_var(k, v) then
+        if nval == -1 then
+          return simplify_fn(mul_op(k, func("ln", func("abs", copy(g)))))
+        else
+          local n1 = nval and num(nval+1) or simplify_fn(add_op(copy(n), num(1)))
+          if is_zero(n1) then return nil end
+          return simplify_fn(mul_op(k, div(pow(copy(g), n1), n1)))
+        end
+      end
+    end
+    return nil
+  end
+  if ast.type == "mul" then
+    local r = check_gpow_gprime(ast.left, ast.right, var, false) or check_gpow_gprime(ast.right, ast.left, var, false)
+    if r then return r end
+  elseif ast.type == "div" then
+    local r = check_gpow_gprime(ast.right, ast.left, var, true)
+    if r then return r end
+  end
+  return nil
+end
+
+-- Rational rules: power rule, 1/x, c/f(x), etc.
+local function tryIntegrateRational(ast, var)
+  if is_symbol(ast, var) then
+    return div(pow(sym(var), num(2)), num(2))
+  end
+  if ast.type == "mul" then
+    local l, r = ast.left, ast.right
+    if is_const_wrt_var(l, var) then
+      local int_r = integrateAST(r, var)
+      if not is_raw_or_integral(int_r) then return mul_op(copy(l), int_r) end
+    elseif is_const_wrt_var(r, var) then
+      local int_l = integrateAST(l, var)
+      if not is_raw_or_integral(int_l) then return mul_op(copy(r), int_l) end
+    end
+  end
+  if ast.type == "div" then
+    local nume, den = ast.left, ast.right
+    if is_const_wrt_var(den, var) and not is_zero(den) then
+      local int_num = integrateAST(nume, var)
+      if not is_raw_or_integral(int_num) then return div(int_num, copy(den)) end
+    end
+    if is_const_wrt_var(nume, var) and den.type == "pow" and is_symbol(den.left, var) and is_const(den.right) then
+      local c = nume
+      local n = den.right.value
+      if n == 1 then
+        return mul_op(copy(c), func("ln", func("abs", sym(var))))
+      else
+        return div(mul_op(copy(c), pow(sym(var), num(1-n))), num(1-n))
+      end
+    end
+    if is_const_wrt_var(nume, var) and is_symbol(den, var) then
+      return mul_op(copy(nume), func("ln", func("abs", sym(var))))
+    end
+    local dden = diffAST(copy(den), var)
+    if not is_raw_or_integral(dden) and not is_zero(dden) then
+      local k = simplify_fn(div(copy(nume), dden))
+      if is_const_wrt_var(k, var) then
+        return mul_op(k, func("ln", func("abs", copy(den))))
+      end
+    end
+  end
+  if ast.type == "pow" then
+    local base, exp = ast.left, ast.right
+    if is_symbol(base, var) and is_const_wrt_var(exp, var) then
+      if is_const(exp) then
+        local n = exp.value
+        if n == -1 then return func("ln", func("abs", sym(var)))
+        else return div(pow(sym(var), num(n+1)), num(n+1)) end
+      else
+        local ep1 = simplify_fn(add_op(copy(exp), num(1)))
+        if is_const(ep1) and ep1.value == 0 then
+          return func("ln", func("abs", sym(var)))
+        else
+          return div(pow(sym(var), ep1), ep1)
+        end
+      end
+    end
+    if is_const_wrt_var(base, var) and is_symbol(exp, var) then
+      if is_const(base) and base.value <= 0 then return nil end
+      if is_const(base) and base.value == 1 then return sym(var) end
+      local ln_base = func("ln", copy(base))
+      return div(pow(copy(base), sym(var)), ln_base)
+    end
+  end
+  return nil
+end
+
+-- Trigonometric rules
+local function tryIntegrateTrig(ast, var)
+  if ast.type == "func" then
+    local fname = ast.name
+    local u = ast.arg
+    if is_linear(u, var) then
+      local a, _ = extract_linear_coeffs_numeric(u, var)
+      if a ~= nil and a ~= 0 then
+        local inva = num(1/a)
+        if fname == "sin" then return mul_op(neg(inva), func("cos", copy(u))) end
+        if fname == "cos" then return mul_op(inva, func("sin", copy(u))) end
+        if fname == "tan" then return mul_op(neg(inva), func("ln", func("abs", func("cos", copy(u))))) end
+        if fname == "cot" then return mul_op(inva, func("ln", func("abs", func("sin", copy(u))))) end
+        if fname == "sec" then return mul_op(inva, func("ln", func("abs", add_op(func("sec", copy(u)), func("tan", copy(u)))))) end
+        if fname == "csc" then return mul_op(neg(inva), func("ln", func("abs", add_op(func("csc", copy(u)), func("cot", copy(u)))))) end
+      elseif a ~= nil and a == 0 then
+        return mul_op(copy(ast), sym(var))
+      end
+    end
+    local du = diffAST(copy(u), var)
+    if is_const(du) and not is_zero(du) then
+      local inv_du = num(1/du.value)
+      if fname == "sin" then return mul_op(neg(inv_du), func("cos", copy(u))) end
+      if fname == "cos" then return mul_op(inv_du, func("sin", copy(u))) end
+    end
+  end
+  if ast.type == "pow" and is_const(ast.right) then
+    local p = ast.right.value
+    local basef = ast.left
+    if basef.type == "func" and basef.arg and is_linear(basef.arg, var) then
+      local u = basef.arg
+      local a, _ = extract_linear_coeffs_numeric(u, var)
+      if a ~= nil and a ~= 0 then
+        local inva = num(1/a)
+        local fname = basef.name
+        if p == 2 then
+          if fname == "sin" then
+            return mul_op(inva, sub(div(copy(u), num(2)), div(func("sin", mul_op(num(2), copy(u))), num(4))))
+          elseif fname == "cos" then
+            return mul_op(inva, add_op(div(copy(u), num(2)), div(func("sin", mul_op(num(2), copy(u))), num(4))))
+          elseif fname == "tan" then
+            return mul_op(inva, sub(func("tan", copy(u)), copy(u)))
+          elseif fname == "cot" then
+            return mul_op(inva, sub(neg(func("cot", copy(u))), copy(u)))
+          elseif fname == "sec" then
+            return mul_op(inva, func("tan", copy(u)))
+          elseif fname == "csc" then
+            return mul_op(neg(inva), func("cot", copy(u)))
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- Exponential rules
+local function tryIntegrateExp(ast, var)
+  if ast.type == "func" and ast.name == "exp" then
+    local u = ast.arg
+    if is_linear(u, var) then
+      local a, _ = extract_linear_coeffs_numeric(u, var)
+      if a ~= nil and a ~= 0 then
+        return mul_op(num(1/a), func("exp", copy(u)))
+      end
+    end
+  end
+  if ast.type == "pow" and is_const_wrt_var(ast.left, var) and is_linear(ast.right, var) then
+    local base, exp = ast.left, ast.right
+    local a, _ = extract_linear_coeffs_numeric(exp, var)
+    if a ~= nil and a ~= 0 then
+      local klnc = mul_op(num(a), func("ln", copy(base)))
+      if is_zero(klnc) then return nil end
+      return div(copy(ast), klnc)
+    end
+  end
+  return nil
+end
+
+-- Logarithmic rules (e.g. ∫ln(x) dx)
+local function tryIntegrateLog(ast, var)
+  if ast.type == "func" and (ast.name == "ln" or ast.name == "log") then
+    local u = ast.arg
+    if is_linear(u, var) and is_symbol(u, var) then
+      local res = integrate_by_parts(copy(ast), num(1), var)
+      if not is_raw_or_integral(res) then return res end
+    end
+  end
+  return nil
+end
+
+-- Main integration function
+function integrateAST(ast, var)
+  if not ast then error("integrateAST: invalid AST node") end
+  if type(ast) ~= "table" then error("integrateAST: non-AST node: "..type(ast)) end
+  var = var or "x"
+  if is_const_wrt_var(ast, var) then
+    return simplify_fn(mul_op(copy(ast), sym(var)))
+  end
+  if ast.type == "add" then
+    local terms = {}
+    for i, t in ipairs(ast.args) do
+      terms[i] = integrateAST(t, var)
+      if is_raw_or_integral(terms[i]) then return unevaluated_integral(copy(ast), sym(var)) end
+    end
+    return simplify_fn(add_op(table.unpack(terms)))
+  end
+  if ast.type == "sub" then
+    local l = integrateAST(ast.left, var)
+    local r = integrateAST(ast.right, var)
+    if is_raw_or_integral(l) or is_raw_or_integral(r) then
+      return unevaluated_integral(copy(ast), sym(var))
+    end
+    return simplify_fn(sub(l, r))
+  end
+  if ast.type == "neg" then
+    local v = integrateAST(ast.value, var)
+    if is_raw_or_integral(v) then
+      return unevaluated_integral(copy(ast), sym(var))
+    end
+    return simplify_fn(neg(v))
+  end
+  local r
+  r = try_u_substitution(ast, var); if r then return simplify_fn(r) end
+  r = tryIntegrateRational(ast, var); if r then return simplify_fn(r) end
+  r = tryIntegrateTrig(ast, var); if r then return simplify_fn(r) end
+  r = tryIntegrateExp(ast, var); if r then return simplify_fn(r) end
+  r = tryIntegrateLog(ast, var); if r then return simplify_fn(r) end
+  r = try_integration_by_parts(ast, var); if r then return simplify_fn(r) end
+  return unevaluated_integral(copy(ast), sym(var))
+end
+
+-- Top-level wrapper
+local function integrate(expr_str, var_str)
+  local parser = rawget(_G, "parser") or require("parser")
+  if type(expr_str) ~= "string" then error("integrate: expected string, got "..type(expr_str)) end
+  local parsed = parser.parse(expr_str)
+  if not parsed then error("Parsing failed for: "..expr_str) end
+  local result = integrateAST(parsed, var_str or "x")
+  return simplify_fn(result)
 end
 
 _G.integrate = integrate

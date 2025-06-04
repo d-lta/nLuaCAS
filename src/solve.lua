@@ -1,8 +1,12 @@
+-- Symbolic solver for equations
+-- Tries matching known forms before falling back to numerical brute force
+-- May or may not give useful answers, depending on how kind your equation is
 -- solve.lua
 -- Symbolic solver for equations: accepts AST (or string), returns solution(s) as string/AST
 -- Works with ast.lua and simplify.lua
-
-
+ 
+-- Basic sanity checks for node identity
+-- These functions pretend to know what a variable is
 -- Utility to check node type
 local function isNum(ast)
     return ast and ast.type == "number"
@@ -11,6 +15,7 @@ local function isVar(ast, v)
     return ast and ast.type == "variable" and (not v or ast.name == v)
 end
 
+-- In case you want to mutate stuff without causing mysterious side effects later
 -- Deep copy for ASTs
 local function deepCopy(obj)
     if type(obj) ~= "table" then return obj end
@@ -19,6 +24,8 @@ local function deepCopy(obj)
     return res
 end
 
+-- Converts ASTs back into readable strings
+-- Emphasis on "readable", not necessarily "good"
 -- Simple AST pretty printer
 local function astToString(ast)
     if not ast then return "?" end
@@ -42,6 +49,8 @@ local function astToString(ast)
     return "?"
 end
 
+-- Poor man's interpreter for fallback numerical methods
+-- Assumes math library knows what it's doing
 -- Evaluate simple expressions (needed for numeric fallback)
 local function eval(ast, vars)
     vars = vars or {}
@@ -67,6 +76,8 @@ local function eval(ast, vars)
     error("Eval: unsupported node type "..tostring(ast.type))
 end
 
+-- Attempts to coerce expressions into polynomials
+-- Good luck if you feed it anything more exotic
 -- Extract coefficients for ax^n + bx + c + ... (monomials in var)
 local function polyCoeffs(ast, var, maxdeg)
     -- Returns: { [0]=c, [1]=b, [2]=a, ... }
@@ -103,6 +114,8 @@ local function polyCoeffs(ast, var, maxdeg)
     return coeffs
 end
 
+-- These are where the "symbolic" magic happens
+-- Spoiler: it's mostly matching and algebra trivia
 -- Pattern-matcher for common forms
 local function matchLinearEq(eq, var)
     -- ax + b = 0
@@ -244,6 +257,8 @@ local function matchExpLogEq(eq, var)
     return nil
 end
 
+-- When all else fails, just guess a number and hope it converges
+-- Symbolic failure, numerical optimism
 -- Fallback: Newton's method (symbolic evaluation if possible)
 local function newtonSolve(eq, var, guess, maxiter)
     maxiter = maxiter or 8
@@ -263,6 +278,8 @@ local function newtonSolve(eq, var, guess, maxiter)
     return x
 end
 
+-- Main interface: give it an equation, get some form of answer (maybe)
+-- Includes desperate variable guessing and symbolic simplification
 -- Top-level solve function (input: AST or string, variable name optional)
 function solve(ast, var)
     -- Convert string input to AST if needed

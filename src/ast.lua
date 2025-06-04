@@ -1,4 +1,8 @@
 
+-- Abstract Syntax Tree (AST) library for symbolic math
+-- Defines constructors, utilities, transformation tools for symbolic expressions.
+-- Built to be cold, deterministic, and unreasonably explicit.
+
 table.unpack = unpack
 
 -- Use simplify.pretty_print for all string conversion of ASTs
@@ -10,7 +14,8 @@ if ok and simplify and simplify.pretty_print then
   ast.tostring = ast_tostring
 end
 
--- AST Debug Printer (recursive)
+-- Recursively print AST structure with optional indentation
+-- For when you want to debug something by yelling at trees
 function ast_debug_print(ast, indent)
     indent = indent or ""
     if type(ast) ~= "table" then
@@ -45,6 +50,9 @@ function ast_debug_print(ast, indent)
         end
     end
 end
+
+-- Core node constructors — these create nodes of various types
+-- If you're not using these, you're probably doing something wrong
 -- Node constructors (convenience)
 function ast_number(val) return { type = "number", value = val } end
 function ast_symbol(name) return { type = "variable", name = name } end
@@ -54,7 +62,7 @@ function ast_neg(val) return { type = "neg", value = val } end
 function ast_pow(base, exp) return { type = "pow", base = base, exp = exp } end
 function ast_raw(str) return { type = "raw", value = str } end
 
--- Deep copy for ASTs
+-- Deep copy an AST — because shallow regret isn't enough
 function ast_deepcopy(obj)
     if type(obj) ~= "table" then return obj end
     local res = {}
@@ -64,7 +72,8 @@ function ast_deepcopy(obj)
     return res
 end
 
--- Equality test for ASTs
+-- Structural equality check for ASTs
+-- Tests whether two expressions are indistinguishably boring
 function ast_equal(a, b)
     if type(a) ~= type(b) then return false end
     if type(a) ~= "table" then return a == b end
@@ -77,7 +86,8 @@ function ast_equal(a, b)
     return true
 end
 
--- Traverse AST (depth-first, pre-order)
+-- Depth-first traversal of the AST
+-- Applies a function to every node, top-down
 function ast_traverse(ast, fn)
     fn(ast)
     if type(ast) == "table" then
@@ -93,7 +103,8 @@ function ast_traverse(ast, fn)
     end
 end
 
--- Map AST (depth-first, post-order)
+-- Like traverse, but returns a new AST
+-- Good for transformations and bad ideas
 function ast_map(ast, fn)
     if type(ast) ~= "table" then return fn(ast) end
     local mapped = {}
@@ -112,7 +123,8 @@ function ast_map(ast, fn)
     return fn(mapped)
 end
 
--- Substitute subtrees (replace all matching with new)
+-- Replace all occurrences of a subtree with another
+-- Think copy/paste but with slightly more guilt
 function ast_substitute(ast, target, replacement)
     if ast_equal(ast, target) then return ast_deepcopy(replacement) end
     if type(ast) ~= "table" then return ast end
@@ -132,7 +144,8 @@ function ast_substitute(ast, target, replacement)
     return res
 end
 
--- Collect all variables (returns set as table { ["x"]=true, ... })
+-- Collect all variable symbols in the AST
+-- Returns a set-like table of every symbol that dares to show up
 function ast_vars(ast, found)
     found = found or {}
     if type(ast) ~= "table" then return found end
@@ -149,7 +162,8 @@ function ast_vars(ast, found)
     return found
 end
 
--- Count number of nodes
+-- Count the total number of nodes in an AST
+-- Like measuring code size, but with more branches
 function ast_size(ast)
     if type(ast) ~= "table" then return 1 end
     local sum = 1
@@ -161,7 +175,8 @@ function ast_size(ast)
     return sum
 end
 
--- Find depth of AST
+-- Computes the maximum depth of the AST
+-- Deep code is not necessarily smart code
 function ast_depth(ast)
     if type(ast) ~= "table" then return 0 end
     local maxd = 0
@@ -250,7 +265,8 @@ function ast_is_op(node, op)
     return type(node) == "table" and node.type == op
 end
 
--- Evaluate simple constant AST (only numbers & numeric operations)
+-- Evaluate the AST numerically if it's purely numeric
+-- Warning: does not handle symbolic stupidity
 function ast_eval_numeric(ast, env)
     env = env or {}
     if ast.type == "number" then return ast.value end
@@ -314,7 +330,8 @@ function ast_eval_numeric(ast, env)
     error("Unsupported node in ast_eval_numeric: " .. tostring(ast.type))
 end
 
--- Pattern matcher for rules: returns bindings or nil
+-- Pattern match against an AST using a pattern
+-- Binds variables, fails if it sees something it doesn’t like
 function ast_match(pattern, ast, bindings)
     bindings = bindings or {}
     if type(pattern) ~= "table" then
@@ -387,7 +404,8 @@ ast = {
     debug_print = ast_debug_print,
 }
 
--- Utility: flatten additive trees to sorted list of terms
+-- Flattens nested additive/multiplicative trees
+-- Useful for canonicalization, sorting, or general misuse
 function ast_flatten_add(node)
     if not ast_is_op(node, "add") then return { node } end
     local parts = {}
@@ -405,7 +423,8 @@ function ast_flatten_add(node)
     return parts
 end
 
--- Utility: flatten multiplicative trees to sorted list of factors
+-- Flattens nested additive/multiplicative trees
+-- Useful for canonicalization, sorting, or general misuse
 function ast_flatten_mul(node)
     if not ast_is_op(node, "mul") then return { node } end
     local parts = {}
@@ -439,6 +458,8 @@ _G.ast_node = ast.node
 _G.ast = ast
 
 
+-- Patch all AST node constructors to auto-set tostring metamethod
+-- So you can print them and pretend you understand the output
 -- Make all AST nodes print pretty with print(ast)
 local ast_mt = {
   __tostring = function(self)

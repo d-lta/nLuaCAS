@@ -59,6 +59,8 @@ do
   local function is_digit(c) return c:match('%d') end
   local function is_alpha(c) return c:match('%a') end
 
+  -- Tokenizes a math expression string into useful fragments.
+  -- Yes, it does implicit multiplication. No, TI doesn’t help with that.
   function parser.tokenize(expr)
     local tokens = {}
     local i = 1
@@ -100,7 +102,8 @@ do
         error('Unknown character in expression: ' .. c)
       end
     end
-    -- Insert '*' for implicit multiplication
+    -- Insert '*' for things like '2x' or '3(x+1)' because humans write like this,
+    -- but Lua doesn't guess your intentions.
     local j = 2
     while j <= #tokens do
       local t1, t2 = tokens[j-1], tokens[j]
@@ -119,6 +122,8 @@ end
 -- Parser: Recursive descent for full expression grammar
 --   Supports precedence, unary minus, and function calls
 
+-- Handles literals, variables, function calls, parentheses, and unary minus.
+-- Also wraps things in factorials if someone thought 'x!' was a good idea.
 local function parse_primary(tokens, idx)
   local tok = tokens[idx]
   if not tok then return nil, idx end
@@ -178,6 +183,7 @@ local function parse_primary(tokens, idx)
   end
 end
 
+-- Parses exponentiation. Right-associative like you'd expect.
 local function parse_power(tokens, idx)
   local left, i = parse_primary(tokens, idx)
   while tokens[i] and tokens[i].type == "op" and tokens[i].value == '^' do
@@ -188,6 +194,8 @@ local function parse_power(tokens, idx)
   return left, i
 end
 
+-- Handles multiplication, division, and reciprocal logic.
+-- `a / b` becomes `a * b^(-1)` — works surprisingly well.
 local function parse_term(tokens, idx)
   -- Parse the first factor
   local factors = {}
@@ -213,6 +221,8 @@ local function parse_term(tokens, idx)
   end
 end
 
+-- The real entry point for expressions. Supports + and -,
+-- but also folds them into a single add tree so simplify doesn’t lose its mind.
 function parser.parseExpr(tokens, idx)
   idx = idx or 1
   -- Special case: expression starts with unary minus
@@ -248,6 +258,8 @@ function parser.parseExpr(tokens, idx)
   end
 end
 
+-- Wraps parseExpr and checks for leftovers.
+-- If you forgot a bracket, this will find it (loudly).
 function parser.buildAST(tokens)
   local ast, idx = parser.parseExpr(tokens, 1)
   if idx <= #tokens then
@@ -256,6 +268,8 @@ function parser.buildAST(tokens)
   return ast
 end
 
+-- Tokenizes and builds an AST from a raw expression.
+-- Also dumps debug logs in case the result is incomprehensible.
 function parser.parse(expr)
   local tokens = parser.tokenize(expr)
   print("[DEBUG] parser.tokenize result:")

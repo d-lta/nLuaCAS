@@ -1,3 +1,8 @@
+-- Derivative Engine (WIP)
+-- Tries to symbolically differentiate expressions.
+-- Some parts work. Some parts pretend to work.
+-- Expect broken edge cases, unimplemented branches, and fallback logic.
+
 local ast = rawget(_G, "ast") or require("ast")
 local trig = rawget(_G, "trig")
 
@@ -28,7 +33,8 @@ local function lim(expr, var, to)
   return { type = 'lim', expr = expr, var = var, to = to }
 end
 
--- Main symbolic differentiation function
+-- Symbolic differentiation core. Tries to pretend it understands your math.
+-- Falls back to limit definitions when it gives up.
 local function diffAST(ast_node, var)
   if not ast_node then
     error("diffAST: invalid AST node passed in")
@@ -37,11 +43,12 @@ local function diffAST(ast_node, var)
     error("diffAST: encountered non-AST node of type " .. type(ast_node))
   end
   var = var or "x"
-  -- Numbers: d/dx(c) = 0
+  -- Numbers don't change. That's kind of the point.
   if ast_node.type == "number" then
+    -- x → 1, everything else → 0. Classic.
     return ast.number(0)
   end
-  -- Symbols: d/dx(x) = 1, d/dx(y) = 0 (if y ~= x)
+  -- x → 1, everything else → 0. Classic.
   if ast_node.type == "variable" then
     if ast_node.name == var then
       return ast.number(1)
@@ -49,11 +56,11 @@ local function diffAST(ast_node, var)
       return ast.number(0)
     end
   end
-  -- Negation: d/dx(-u) = -du/dx
+  -- Negation: signs flip, but rules stay the same.
   if ast_node.type == "neg" then
     return ast.neg(diffAST(ast_node.value, var))
   end
-  -- Addition: d/dx(u1+u2+...+un) = du1/dx + du2/dx + ... + dun/dx (n-ary)
+  -- Addition: term-wise differentiation. Nothing surprising.
   if ast_node.type == "add" then
     local deriv_args = {}
     for i, term in ipairs(ast_node.args) do
@@ -61,11 +68,11 @@ local function diffAST(ast_node, var)
     end
     return ast.add(table.unpack(deriv_args))
   end
-  -- Subtraction: d/dx(u-v) = du/dx - dv/dx
+  -- Subtraction: just addition's grumpy cousin.
   if ast_node.type == "sub" then
     return ast.sub(diffAST(ast_node.left, var), diffAST(ast_node.right, var))
   end
-  -- Multiplication: generalized product rule for n-ary mul
+  -- Multiplication: full product rule. Brace yourself.
   if ast_node.type == "mul" then
     local n = #ast_node.args
     local terms = {}
@@ -82,7 +89,7 @@ local function diffAST(ast_node, var)
     end
     return ast.add(table.unpack(terms))
   end
-  -- Division: d/dx(u/v) = (du/dx*v - u*dv/dx)/v^2
+  -- Quotient rule. Surprisingly tidy, even here.
   if ast_node.type == "div" then
     local u = ast_node.left
     local v = ast_node.right
@@ -98,7 +105,8 @@ local function diffAST(ast_node, var)
 
     return ast.div(numerator, denominator)
   end
-  -- Power: d/dx(u^n) and d/dx(f(x)^g(x))
+  -- Powers: handles constants, variables, and full u^v chains.
+  -- Tries to be clever with logs if needed.
   if ast_node.type == "pow" then
     local u, n = ast_node.base, ast_node.exp
     -- Case: u^c, c constant
@@ -127,7 +135,9 @@ local function diffAST(ast_node, var)
       )
     end
   end
-  -- Functions: sin, cos, tan, cot, sec, csc, exp, ln, log, sqrt, etc.
+  -- Function differentiation: sin, exp, ln, etc.
+  -- Tries trig.lua first. Falls back to hardcoded rules.
+  -- Anything unknown? It gets the limit treatment.
   if ast_node.type == "func" then
     local fname = ast_node.name
     -- Support both .arg (single) and .args (list) notation
@@ -204,7 +214,7 @@ local function diffAST(ast_node, var)
       return lim(quot, "__h__", ast.number(0))
     end
   end
-  -- Unhandled node types: fallback to limit definition
+  -- No clue what this is. Marked for manual inspection later.
   -- As a safety fallback, return an unknown node
   local result = { type = "unhandled_node", original = ast_node }
   if type(result) ~= "table" or not result.type then
@@ -214,7 +224,8 @@ local function diffAST(ast_node, var)
 end
 
 
--- Wrapper: derivative(expr, var)
+-- Public interface: takes string input, returns simplified derivative AST.
+-- If it doesn't break, it probably worked.
 local function derivative(expr, var)
   -- Load parser
   local parser = rawget(_G, "parser") or require("parser")

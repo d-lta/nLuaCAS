@@ -14,7 +14,8 @@ local DEBUG = true
 local function dbgprint(...)
   if DEBUG then print("[DEBUG]", ...) end
 end
-
+-- Rules table: pattern-action pairs for transforming ASTs
+-- Each rule is a band-aid over deeper algebraic misery
 -- Rules table must be declared before any table.insert(rules, ...)
 local rules = {}
 
@@ -1250,7 +1251,8 @@ local function transformFactorialToGamma(expr)
   return new_expr
 end
 
-
+-- Entry point: simplify this AST until it stops complaining
+-- May loop forever if your grammar is complex enough
 function simplify.simplify(expr_input)
   dbgprint("Input to simplify:", simplify.pretty_print(expr_input))
   local expr = deepcopy(expr_input) -- Ensure we don't modify the input AST

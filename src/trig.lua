@@ -1,9 +1,11 @@
-
-
 -- trig.lua
 -- Trig evaluation and symbolic helpers for nLuaCAS
+-- Mostly here to pretend we remember SOHCAHTOA and the chain rule
 
 
+-- Handles numeric evaluation of trig functions
+-- Assumes degrees because radians scare most calculator users
+-- Falls back to symbolic if it smells like algebra
 -- Numeric trig evaluation (angle in degrees if constant input)
 local function eval_trig_func(fname, arg)
   if type(arg) == "table" and arg.type == "number" then
@@ -21,6 +23,9 @@ local function eval_trig_func(fname, arg)
   return nil
 end
 
+-- Symbolic derivatives of trig functions
+-- Applies the chain rule without asking for permission
+-- Sins become cosines, cosines become negative sins, and so on
 -- Symbolic differentiation of all trig functions (chain rule applied)
 local function diff_trig_func(fname, arg, darg)
   if fname == "sin" then
@@ -39,6 +44,8 @@ local function diff_trig_func(fname, arg, darg)
   return nil
 end
 
+-- Bundle it up for the global namespace
+-- Hopefully avoids circular dependency chaos
 _G.trig = {
   eval_trig_func = eval_trig_func,
   diff_trig_func = diff_trig_func,

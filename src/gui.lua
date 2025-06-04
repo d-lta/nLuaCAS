@@ -5,11 +5,12 @@ if not parser or not parser.parse then
 end
 local parse = parser.parse
 local simplify = rawget(_G, "simplify")
--- Ensure compatibility with Lua 5.2+ where unpack is table.unpack
+-- Compatibility hack: unpack became table.unpack in newer Lua, because reasons
 unpack = unpack or table.unpack
--- ETK View System (copied from S2.lua)
+-- ETK View System (lifted and tweaked from SuperSpire/S2.lua)
 defaultFocus = nil
 
+-- The View class: manages widgets, focus, mouse events, and general UI mayhem.
 View = class()
 
 function View:init(window)
@@ -33,6 +34,7 @@ function View:setCursor(cursor)
 	end
 end
 
+-- Add a widget to the view, because clearly we like clutter. Also handles focus logic.
 function View:add(o)
 	table.insert(self.widgetList, o)
 	self:repos(o)
@@ -45,6 +47,7 @@ function View:add(o)
 	return o
 end
 
+-- Remove a widget from the view, and try to pretend nothing ever happened.
 function View:remove(o)
 	if self:getFocus() == o then
 		o:releaseFocus()
@@ -79,6 +82,7 @@ function View:remove(o)
 	end
 end
 
+-- Reposition and resize a widget according to its constraints. Because pixel-perfect UIs are for the weak.
 function View:repos(o)
 	local x = o.x
 	local y = o.y
@@ -102,12 +106,14 @@ function View:repos(o)
 	o:resize(w, h)
 end
 
+-- Resize all widgets in the view. Hope they like their new size.
 function View:resize()
 	for _, o in ipairs(self.widgetList) do
 		self:repos(o)
 	end
 end
 
+-- Hide a widget. Out of sight, out of mind (and out of focus).
 function View:hide(o)
 	if o.visible then
 		o.visible = false
@@ -119,6 +125,7 @@ function View:hide(o)
 	end
 end
 
+-- Show a widget. If it was invisible, now it can bask in the user's gaze.
 function View:show(o)
 	if not o.visible then
 		o.visible = true
@@ -129,6 +136,7 @@ function View:show(o)
 	end
 end
 
+-- Return the currently focused widget, or nil if nothing bothers to have focus.
 function View:getFocus()
 	if self.currentFocus == 0 then
 		return nil
@@ -136,6 +144,7 @@ function View:getFocus()
 	return self.focusList[self.currentFocus]
 end
 
+-- Give focus to a widget, and make everyone else jealous.
 function View:setFocus(obj)
 	if self.currentFocus ~= 0 then
 		if self.focusList[self.currentFocus] == obj then
@@ -154,6 +163,7 @@ function View:setFocus(obj)
 	end
 end
 
+-- Take focus away from a widget. It probably didn't deserve it anyway.
 function View:releaseFocus(obj)
 	if self.currentFocus ~= 0 then
 		if self.focusList[self.currentFocus] == obj then
@@ -164,6 +174,7 @@ function View:releaseFocus(obj)
 	end
 end
 
+-- Send a string to the focused widget, or desperately try to find anyone who will take it.
 function View:sendStringToFocus(str)
 	local o = self:getFocus()
 	if not o then
@@ -193,6 +204,7 @@ function View:sendStringToFocus(str)
 	end
 end
 
+-- Handle backspace for the focused widget, or for anyone who claims to accept it.
 function View:backSpaceHandler()
 	local o = self:getFocus()
 	if o then
@@ -216,6 +228,7 @@ function View:backSpaceHandler()
 	end
 end
 
+-- Move focus to the next widget, looping around. Because tab order is a suggestion, not a rule.
 function View:tabForward()
 	local nextFocus = self.currentFocus + 1
 	if nextFocus > #self.focusList then
@@ -230,6 +243,7 @@ function View:tabForward()
 	self:invalidate()
 end
 
+-- Move focus to the previous widget, looping around. For the rebels who like shift+tab.
 function View:tabBackward()
 	local nextFocus = self.currentFocus - 1
 	if nextFocus < 1 then
@@ -242,6 +256,7 @@ function View:tabBackward()
 	self:invalidate()
 end
 
+-- Handle mouse down events, capturing the widget that gets clicked (and focus).
 function View:onMouseDown(x, y)
 	for _, o in ipairs(self.widgetList) do
 		if o.visible and o.acceptsFocus and o:contains(x, y) then
@@ -258,6 +273,7 @@ function View:onMouseDown(x, y)
 	end
 end
 
+-- Handle mouse move events, triggering enter/leave events for widgets. Because hover states are important.
 function View:onMouseMove(x, y)
 	local prev_mousex = self.prev_mousex
 	local prev_mousey = self.prev_mousey
@@ -276,6 +292,7 @@ function View:onMouseMove(x, y)
 	self.prev_mousey = y
 end
 
+-- Handle mouse up events, releasing the widget that was so rudely pressed.
 function View:onMouseUp(x, y)
 	local mc = self.mouseCaptured
 	if mc then
@@ -286,6 +303,7 @@ function View:onMouseUp(x, y)
 	end
 end
 
+-- Handle "enter" key for the focused widget, or anyone who cares.
 function View:enterHandler()
 	local o = self:getFocus()
 	if o then
@@ -309,6 +327,7 @@ function View:enterHandler()
 	end
 end
 
+-- Handle left arrow key for the focused widget, or anyone who wants to move left in life.
 function View:arrowLeftHandler()
 	local o = self:getFocus()
 	if o then
@@ -332,6 +351,7 @@ function View:arrowLeftHandler()
 	end
 end
 
+-- Handle right arrow key for the focused widget, or anyone who wants to move right in life.
 function View:arrowRightHandler()
 	local o = self:getFocus()
 	if o then
@@ -355,6 +375,7 @@ function View:arrowRightHandler()
 	end
 end
 
+-- Handle up arrow key for the focused widget. Because up is the new down.
 function View:arrowUpHandler()
 	local o = self:getFocus()
 	if o then
@@ -378,6 +399,7 @@ function View:arrowUpHandler()
 	end
 end
 
+-- Handle down arrow key for the focused widget. Because down is the new up.
 function View:arrowDownHandler()
 	local o = self:getFocus()
 	if o then
@@ -401,6 +423,7 @@ function View:arrowDownHandler()
 	end
 end
 
+-- Paint all widgets to the screen, highlight the focused one, and set the cursor.
 function View:paint(gc)
 	local fo = self:getFocus()
 	for _, o in ipairs(self.widgetList) do
@@ -419,6 +442,7 @@ end
 
 theView = nil
 
+-- Widget base class. All widgets inherit from this, like it or not.
 Widget = class()
 
 function Widget:setHConstraints(hConstraint, dx1)
@@ -489,6 +513,7 @@ function Widget:arrowRightHandler() end
 function Widget:onMouseDown(x, y) end
 function Widget:onMouseUp(x, y) end
 
+-- Button widget, for people who like clicking things.
 Button = class(Widget)
 
 function Button:init(view, x, y, w, h, default, command, shortcut)
@@ -601,6 +626,7 @@ function Button:addString(str)
 	return false
 end
 
+-- Image label widget. Displays an image, does nothing else. The laziest widget.
 ImgLabel = class(Widget)
 
 function ImgLabel:init(view, x, y, img)
@@ -614,6 +640,7 @@ function ImgLabel:paint(gc, focused)
 	gc:drawImage(self.img, self.x, self.y)
 end
 
+-- Image button widget. Like a button, but with more pixels.
 ImgButton = class(Button)
 
 function ImgButton:init(view, x, y, img, command, shortcut)
@@ -627,6 +654,7 @@ function ImgButton:paint(gc, focused)
 	gc:drawImage(self.img, self.x, self.y)
 end
 
+-- Text button widget. For those who prefer words to icons.
 TextButton = class(Button)
 
 function TextButton:init(view, x, y, text, command, shortcut)
@@ -654,6 +682,7 @@ function TextButton:paint(gc, focused)
 	gc:drawRect(self.x, self.y, self.w - 2, self.h - 2)
 end
 
+-- Vertical scrollbar widget. Because scrolling through history is a thing.
 VScrollBar = class(Widget)
 
 function VScrollBar:init(view, x, y, w, h)
@@ -668,6 +697,7 @@ function VScrollBar:paint(gc, focused)
 	gc:fillRect(self.x + 2, self.y + self.h - (self.h - 4) * (self.pos + self.siz) / 100 - 2, self.w - 3, math.max(1, (self.h - 4) * self.siz / 100 + 1))
 end
 
+-- Text label widget. It just sits there and looks pretty.
 TextLabel = class(Widget)
 
 function TextLabel:init(view, x, y, text)
@@ -696,6 +726,7 @@ function TextLabel:paint(gc, focused)
 	gc:drawString(self.text, self.x, self.y, "top")
 end
 
+-- Rich text editor widget. Handles text entry, but don't expect Microsoft Word.
 RichTextEditor = class(Widget)
 
 function RichTextEditor:init(view, x, y, w, h, text)
@@ -749,8 +780,11 @@ end
 
 function RichTextEditor:paint(gc, focused) end
 
+-- MathEditor: a rich text editor with math-specific quirks and a love for Unicode.
 MathEditor = class(RichTextEditor)
 
+-- Returns the number of Unicode codepoints in a string.
+-- Because Lua strings are byte-based and Unicode is hard.
 function ulen(str)
 	if not str then return 0 end
 	local n = string.len(str)
@@ -765,6 +799,7 @@ function ulen(str)
 	return i - 1
 end
 
+-- Initialize a MathEditor, set up filters for key events, and generally make life complicated.
 function MathEditor:init(view, x, y, w, h, text)
 	RichTextEditor.init(self, view, x, y, w, h, text)
 	self.editor:setBorder(1)
@@ -841,6 +876,7 @@ function MathEditor:init(view, x, y, w, h, text)
 	})
 end
 
+-- Ensures the editor has a math box at all times.
 function MathEditor:fixContent()
 	local currentText = self.editor:getExpressionSelection()
 	if currentText == "" or currentText == nil then
@@ -848,6 +884,9 @@ function MathEditor:fixContent()
 	end
 end
 
+-- Make sure the cursor stays inside the editable region of the Unicode string.
+-- D2Editor likes to insert special tokens at the start, so we have to skip the first 6 codepoints.
+-- If the cursor escapes the allowed range, forcibly drag it back, because users can't be trusted.
 function MathEditor:fixCursor()
 	local currentText, curpos, selstart = self.editor:getExpressionSelection()
 	local l = ulen(currentText)
@@ -860,6 +899,7 @@ function MathEditor:fixCursor()
 	end
 end
 
+-- Extract the user-entered expression from the D2Editor string, skipping any special formatting.
 function MathEditor:getExpression()
 	if not self.editor then return "" end
 	local rawexpr = self.editor:getExpression()
@@ -896,34 +936,41 @@ function MathEditor:getExpression()
 	return expr
 end
 
+-- Set focus to the math editor, so it can feel important.
 function MathEditor:setFocus()
 	if not self.editor then return end
 	self.editor:setFocus(true)
 end
 
+-- Remove focus from the math editor, so it can sulk in the corner.
 function MathEditor:releaseFocus()
 	if not self.editor then return end
 	self.editor:setFocus(false)
 end
 
+-- Inserts text at the cursor. Assumes user knows what they’re doing. (They probably don’t.)
 function MathEditor:addString(str)
 	if not self.editor then return false end
 	self:fixCursor()
+	-- Unicode string slicing: because normal string.sub just isn't enough.
 	local currentText, curpos, selstart = self.editor:getExpressionSelection()
 	local newText = string.usub(currentText, 1, math.min(curpos, selstart)) .. str .. string.usub(currentText, math.max(curpos, selstart) + 1, ulen(currentText))
 	self.editor:setExpression(newText, math.min(curpos, selstart) + ulen(str))
 	return true
 end
 
+-- Handle backspace. (No-op for now, because history deletion is scary.)
 function MathEditor:backSpaceHandler()
     -- No-op or custom deletion logic (history removal not implemented)
 end
 
+-- Handle enter key. Just delegates to the real handler.
 function MathEditor:enterHandler()
     -- Call the custom on.enterKey handler instead of missing global
     on.enterKey()
 end
 
+-- Draws horizontal lines under the editor, if we're feeling fancy.
 function MathEditor:paint(gc)
 	if showHLines and not self.result then
 		gc:setColorRGB(100, 100, 100)
@@ -979,6 +1026,8 @@ function on.backtabKey()
   if theView then theView:tabBackward(); reposView() end
 end
 
+-- This one’s the brains of the operation. Parses input, handles edge cases,
+-- pretends to understand integration, and maybe even returns something useful.
 function on.enterKey()
   if not fctEditor or not fctEditor.getExpression then return end
 
@@ -1386,6 +1435,8 @@ end
 
 dispinfos = true
 
+-- The main UI rendering phase: draws status, output, and all widgets.
+-- If you’re looking for where the magic (or horror) happens, it’s here.
 function on.paint(gc)
 	if not inited then
 		initGUI()
@@ -1464,6 +1515,7 @@ histME1 = {}
 histME2 = {}
 
 
+-- Reminder: this is the thing that dumps both the input and result into history.
 function addME(expr, res, colorHint)
 	mee = MathEditor(theView, border, border, 50, 30, "")
 	mee.readOnly = true
