@@ -2,6 +2,7 @@
 -- Trig evaluation and symbolic helpers for nLuaCAS
 -- Mostly here to pretend we remember SOHCAHTOA and the chain rule
 
+local errors = _G.errors
 
 -- Handles numeric evaluation of trig functions
 -- Assumes degrees because radians scare most calculator users
@@ -20,10 +21,9 @@ local function eval_trig_func(fname, arg)
     if fname == "csc" then return ast.number(1 / math.sin(rad)) end
   end
   -- Not a numeric constant: return nil, fall back to symbolic
-  return nil
+  return nil -- fallback to symbolic; not a number
 end
 
--- Symbolic derivatives of trig functions
 -- Applies the chain rule without asking for permission
 -- Sins become cosines, cosines become negative sins, and so on
 -- Symbolic differentiation of all trig functions (chain rule applied)
@@ -41,7 +41,25 @@ local function diff_trig_func(fname, arg, darg)
   elseif fname == "csc" then
     return ast.mul(ast.neg(ast.mul(ast.func("csc", {arg}), ast.func("cot", {arg}))), darg)
   end
-  return nil
+  return error(errors.invalid("diff", "unknown trig function: " .. tostring(fname)))
+end
+
+-- Symbolic integration of trig functions
+local function integrate_trig_func(fname, arg)
+  if fname == "sin" then
+    return ast.neg(ast.func("cos", {arg}))
+  elseif fname == "cos" then
+    return ast.func("sin", {arg})
+  elseif fname == "tan" then
+    return ast.neg(ast.func("ln", {ast.func("cos", {arg})}))
+  elseif fname == "cot" then
+    return ast.func("ln", {ast.func("sin", {arg})})
+  elseif fname == "sec" then
+    return ast.func("ln", {ast.add(ast.func("sec", {arg}), ast.func("tan", {arg}))})
+  elseif fname == "csc" then
+    return ast.neg(ast.func("ln", {ast.add(ast.func("csc", {arg}), ast.func("cot", {arg}))}))
+  end
+  return nil -- unknown trig function, fallback to unhandled
 end
 
 -- Bundle it up for the global namespace
@@ -49,4 +67,5 @@ end
 _G.trig = {
   eval_trig_func = eval_trig_func,
   diff_trig_func = diff_trig_func,
+  integrate_trig_func = integrate_trig_func,
 }

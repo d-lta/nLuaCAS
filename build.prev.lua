@@ -42,7 +42,7 @@ end
 
 -- End src/init.lua
 
--- Glued in src/init.lua. Now question why you needed it.
+-- Imported src/init.lua—debuggers rejoice.
 
 -- Begin src/ast.lua
 
@@ -780,7 +780,7 @@ end
 
 -- End src/errors.lua
 
--- src/errors.lua is in; don’t let that parser bite you later.
+-- src/errors.lua has arrived. Prepare to blame someone.
 
 -- Begin src/parser.lua
 -- parser.lua: Because writing your own parser is the best way to avoid happiness.
@@ -1568,7 +1568,7 @@ end
 
 -- End src/parser.lua
 
--- You included src/parser.lua—brace for unexpected side effects.
+-- Imported src/parser.lua—debuggers rejoice.
 
 -- Begin src/factorial.lua
 -- factorial.lua
@@ -1678,7 +1678,7 @@ _G.evaluateFactorial = evaluateFactorial  -- Expose evaluateFactorial globally
 
 -- End src/factorial.lua
 
--- Glued in src/factorial.lua. Now question why you needed it.
+-- Just added src/factorial.lua—hope your logic is watertight.
 
 -- Begin src/simplify.lua
 local simplify = {}
@@ -1855,15 +1855,6 @@ local function fold_constants(expr)
 
         -- Zero kills everything
         if product == 0 then return num(0) end
-
-        -- Remove any numeric factor 1 from non_numbers, unless it is the only factor
-        local filtered_non_numbers = {}
-        for _, arg in ipairs(non_numbers) do
-            if not (is_num(arg) and arg.value == 1 and #non_numbers > 1) then
-                table.insert(filtered_non_numbers, arg)
-            end
-        end
-        non_numbers = filtered_non_numbers
 
         local result_args = {}
         -- Only include the 1 if there are no non-numeric factors
@@ -2616,10 +2607,6 @@ local function pretty_print_internal(expr, parent_op, position)
     end
     -- Division
     if expr.type == "div" and expr.left and expr.right then
-        -- If denominator is 1, just return numerator
-        if is_num(expr.right) and expr.right.value == 1 then
-            return pretty_print_internal(expr.left, parent_op, position)
-        end
         local left_str = pretty_print_internal(expr.left, "div", "left")
         local right_str = pretty_print_internal(expr.right, "div", "right")
         if not is_simple_factor(expr.left) then
@@ -2713,7 +2700,7 @@ _G.simplify = simplify
 
 -- End src/simplify.lua
 
--- src/simplify.lua makes your code richer. Or at least gout-ridden.
+-- You included src/simplify.lua—brace for unexpected side effects.
 
 -- Begin src/matrix.lua
 local ast = _G.ast or error("AST module required")
@@ -2821,7 +2808,7 @@ _G.Matrix = Matrix
 
 -- End src/matrix.lua
 
--- Just added src/matrix.lua—hope your logic is watertight.
+-- Integrated src/matrix.lua: let’s hope it compiles this time.
 
 -- Begin src/derivative.lua
 -- Derivative Engine (WIP)
@@ -3106,7 +3093,7 @@ _G.diffAST = diffAST
 
 -- End src/derivative.lua
 
--- src/derivative.lua makes your code richer. Or at least gout-ridden.
+-- You included src/derivative.lua—brace for unexpected side effects.
 
 -- Begin src/trig.lua
 -- trig.lua
@@ -3183,7 +3170,7 @@ _G.trig = {
 
 -- End src/trig.lua
 
--- Tossed src/trig.lua in here—go ahead, run your tests.
+-- src/trig.lua has arrived. Prepare to blame someone.
 
 -- Begin src/integrate.lua
 -- Integral Engine (Enhanced Edition - Because Apparently We're Gluttons for Punishment)
@@ -3213,7 +3200,7 @@ local known_integral_table = {
   cosh = function(arg) return ast.func("sinh", {copy(arg)}) end,
   tanh = function(arg) return ast.func("ln", {ast.func("cosh", {copy(arg)})}) end,
   
-  -- Square root integrals (the "f it, let's go deeper" collection)
+  -- Square root integrals (the "fuck it, let's go deeper" collection)
   sqrt = function(arg)
     if is_symbol(arg, "x") then
       return ast.div(ast.mul(ast.number(2), ast.pow(arg, ast.div(ast.number(3), ast.number(2)))), ast.number(3))
@@ -3431,7 +3418,7 @@ local function try_substitution(node, var)
   return nil
 end
 
--- Integration by parts (now with recursive attempts because we're fing insane)
+-- Integration by parts (now with recursive attempts because we're fucking insane)
 local function try_integration_by_parts(node, var)
   if not node or node.type ~= "mul" or not node.args or #node.args < 2 then 
     return nil 
@@ -4184,7 +4171,7 @@ _G.test_integration = test_integration
 
 -- End src/integrate.lua
 
--- src/integrate.lua has arrived. Prepare to blame someone.
+-- Imported src/integrate.lua—debuggers rejoice.
 
 -- Begin src/physics.lua
 local errors = _G.errors
@@ -5838,7 +5825,7 @@ _G.Matrix = Matrix
 
 -- End src/physics.lua
 
--- You included src/physics.lua—brace for unexpected side effects.
+-- Imported src/physics.lua—debuggers rejoice.
 
 -- Begin src/solve.lua
 -- TODO: Make sure all equation types listed above are *actually* supported in the code below. If not, add matcher and solver logic.
@@ -6680,7 +6667,7 @@ _G.series = series
 
 -- End src/series.lua
 
--- Merged src/series.lua: pray those ASTs behave.
+-- You included src/series.lua—brace for unexpected side effects.
 
 -- Begin src/gui.lua
 _G.darkMode = (var.recall("dark_mode") == 1)
@@ -8994,6 +8981,6 @@ end
 
 -- End src/gui.lua
 
--- Just added src/gui.lua—hope your logic is watertight.
+-- You included src/gui.lua—brace for unexpected side effects.
 
--- Build wrapping up. Tossed build.lua in here—go ahead, run your tests.
+-- Build wrapping up. You included build.lua—brace for unexpected side effects.

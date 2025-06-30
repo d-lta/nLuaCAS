@@ -4,11 +4,31 @@
 
 -- Numerical fallback (not actually used in AST transforms)
 -- Just here for completeness, or when someone evaluates factorial(5) directly
+-- Lanczos approximation for Gamma function, accurate for most real numbers
+local lanczos_coef = {
+  676.5203681218851, -1259.1392167224028, 771.32342877765313,
+  -176.61502916214059, 12.507343278686905, -0.13857109526572012,
+  9.9843695780195716e-6, 1.5056327351493116e-7
+}
+
+local function gamma(z)
+  if z < 0.5 then
+    -- Reflection formula for negative arguments
+    return math.pi / (math.sin(math.pi * z) * gamma(1 - z))
+  else
+    z = z - 1
+    local x = 0.99999999999980993
+    for i = 1, #lanczos_coef do
+      x = x + lanczos_coef[i] / (z + i)
+    end
+    local t = z + #lanczos_coef - 0.5
+    return math.sqrt(2 * math.pi) * t^(z + 0.5) * math.exp(-t) * x
+  end
+end
+
+-- General factorial using Gamma, valid for real/complex domain
 local function factorial(n)
-  assert(n >= 0 and math.floor(n) == n, "factorial only defined for non-negative integers")
-  local result = 1
-  for i = 2, n do result = result * i end
-  return result
+  return gamma(n + 1)
 end
 
 -- Matches factorial(x) and returns gamma(x + 1)
@@ -69,4 +89,16 @@ function transformFactorial(ast)
   return out
 end
 
+-- Evaluate the Gamma function numerically using the Lanczos approximation
+local function evaluateGamma(z)
+  return gamma(z)
+end
+
+-- Evaluate the factorial numerically using the Gamma function
+local function evaluateFactorial(n)
+  return factorial(n)
+end
+
 _G.transformFactorial = transformFactorial
+_G.evaluateGamma = evaluateGamma  -- Expose evaluateGamma globally
+_G.evaluateFactorial = evaluateFactorial  -- Expose evaluateFactorial globally

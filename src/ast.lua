@@ -51,16 +51,59 @@ function ast_debug_print(ast, indent)
     end
 end
 
--- Core node constructors — these create nodes of various types
 -- If you're not using these, you're probably doing something wrong
 -- Node constructors (convenience)
 function ast_number(val) return { type = "number", value = val } end
 function ast_symbol(name) return { type = "variable", name = name } end
 function ast_func(name, args) return { type = "func", name = name, args = args or {} } end
 function ast_binop(op, left, right) return { type = op, left = left, right = right } end
-function ast_neg(val) return { type = "neg", value = val } end
+function ast_neg(val) return { type = "neg", arg = val } end
 function ast_pow(base, exp) return { type = "pow", base = base, exp = exp } end
 function ast_raw(str) return { type = "raw", value = str } end
+
+
+-- Patch all AST node constructors to auto-set tostring metamethod
+-- So you can print them and pretend you understand the output
+-- Make all AST nodes print pretty with print(ast)
+local ast_mt = {
+  __tostring = function(self)
+    if _G.ast_tostring then
+      return _G.ast_tostring(self)
+    elseif _G.simplify and _G.simplify.pretty_print then
+      return _G.simplify.pretty_print(self)
+    else
+      return "[AST]"
+    end
+  end
+}
+-- Patch constructors to set metatable for all AST nodes
+local function set_ast_mt(node)
+  if type(node) == "table" and node.type and getmetatable(node) ~= ast_mt then
+    setmetatable(node, ast_mt)
+    -- Recursively set for children
+    if node.args then
+      for _, v in ipairs(node.args) do set_ast_mt(v) end
+    end
+    if node.left then set_ast_mt(node.left) end
+    if node.right then set_ast_mt(node.right) end
+    if node.base then set_ast_mt(node.base) end
+    if node.exp then set_ast_mt(node.exp) end
+    if node.value and type(node.value) == "table" then set_ast_mt(node.value) end
+    -- Patch matrix rows if present
+    if node.rows then
+      for _, row in ipairs(node.rows) do
+        for i, cell in ipairs(row) do
+          row[i] = set_ast_mt(cell)
+        end
+      end
+    end
+  end
+  return node
+end
+
+function ast_matrix(rows)
+  return set_ast_mt({ type = "matrix", rows = rows })
+end
 
 -- Deep copy an AST — because shallow regret isn't enough
 function ast_deepcopy(obj)
@@ -206,7 +249,7 @@ function ast_tostring_raw(ast)
         return ast.name .. "(" .. table.concat(args, ",") .. ")"
     end
     if ast.type == "neg" then
-        return "-(" .. ast_tostring_raw(ast.value) .. ")"
+        return "-(" .. ast_tostring_raw(ast.arg) .. ")"
     end
     if ast.type == "pow" then
         return "(" .. ast_tostring_raw(ast.base) .. ")^(" .. ast_tostring_raw(ast.exp) .. ")"
@@ -264,6 +307,7 @@ end
 function ast_is_op(node, op)
     return type(node) == "table" and node.type == op
 end
+
 
 -- Evaluate the AST numerically if it's purely numeric
 -- Warning: does not handle symbolic stupidity
@@ -325,7 +369,7 @@ function ast_eval_numeric(ast, env)
         return ast_eval_numeric(ast.base, env) ^ ast_eval_numeric(ast.exp, env)
     end
     if ast.type == "neg" then
-        return -ast_eval_numeric(ast.value, env)
+        return -ast_eval_numeric(ast.arg, env)
     end
     error("Unsupported node in ast_eval_numeric: " .. tostring(ast.type))
 end
@@ -370,11 +414,13 @@ end
 ast = {
     number = ast_number,
     symbol = ast_symbol,
+    variable = ast_symbol,
     func = ast_func,
     binop = ast_binop,
     neg = ast_neg,
     pow = ast_pow,
     raw = ast_raw,
+    matrix = ast_matrix,
 
     -- Shorthand binary operation constructors
     add = function(...) return { type = "add", args = {...} } end,
@@ -383,6 +429,7 @@ ast = {
     div = function(l, r) return ast_binop("div", l, r) end,
     pow = function(l, r) return ast_pow(l, r) end,
     neg = ast_neg,
+    eq = function(left, right) return { type = "equation", left = left, right = right } end,
 
     deepcopy = ast_deepcopy,
     equal = ast_equal,
@@ -458,53 +505,56 @@ _G.ast_node = ast.node
 _G.ast = ast
 
 
--- Patch all AST node constructors to auto-set tostring metamethod
--- So you can print them and pretend you understand the output
--- Make all AST nodes print pretty with print(ast)
-local ast_mt = {
-  __tostring = function(self)
-    if _G.ast_tostring then
-      return _G.ast_tostring(self)
-    elseif _G.simplify and _G.simplify.pretty_print then
-      return _G.simplify.pretty_print(self)
-    else
-      return "[AST]"
-    end
-  end
-}
--- Patch constructors to set metatable for all AST nodes
-local function set_ast_mt(node)
-  if type(node) == "table" and node.type and getmetatable(node) ~= ast_mt then
-    setmetatable(node, ast_mt)
-    -- Recursively set for children
-    if node.args then
-      for _, v in ipairs(node.args) do set_ast_mt(v) end
-    end
-    if node.left then set_ast_mt(node.left) end
-    if node.right then set_ast_mt(node.right) end
-    if node.base then set_ast_mt(node.base) end
-    if node.exp then set_ast_mt(node.exp) end
-    if node.value and type(node.value) == "table" then set_ast_mt(node.value) end
-  end
-  return node
-end
--- Wrap original node constructors
-local old_number, old_symbol, old_func, old_binop, old_neg, old_pow, old_raw = ast_number, ast_symbol, ast_func, ast_binop, ast_neg, ast_pow, ast_raw
-function ast_number(val) return set_ast_mt(old_number(val)) end
-function ast_symbol(name) return set_ast_mt(old_symbol(name)) end
-function ast_func(name, args) return set_ast_mt(old_func(name, args)) end
-function ast_binop(op, l, r) return set_ast_mt(old_binop(op, l, r)) end
-function ast_neg(val) return set_ast_mt(old_neg(val)) end
-function ast_pow(base, exp) return set_ast_mt(old_pow(base, exp)) end
-function ast_raw(str) return set_ast_mt(old_raw(str)) end
-function ast_node(typ, opts)
-  local node = { type = typ }
-  for k, v in pairs(opts or {}) do
-    node[k] = v
-  end
-  return set_ast_mt(node)
-end
-ast.node = ast_node
-_G.ast_node = ast.node
+
 
 _G.ast_debug_print = ast_debug_print
+
+
+-- Patch ast.eval_numeric to support physics functions without cyclic load errors
+do
+  local old_eval_numeric = ast.eval_numeric
+
+  function ast.eval_numeric(node, env)
+    env = env or {}
+    -- Lazy-load physics module to break cyclic dependency
+    local physics = _G.physics or require("physics")
+
+    if node.type == "func" then
+      local args_eval = {}
+      for i, arg in ipairs(node.args) do
+        args_eval[i] = ast.eval_numeric(arg, env)
+      end
+
+      if math[node.name] then
+        return math[node.name](table.unpack(args_eval))
+      end
+
+      if node.name == "ln" then return math.log(args_eval[1]) end
+      if node.name == "log" then return math.log10(args_eval[1]) end
+      if node.name == "gamma" then
+        local n = args_eval[1]
+        if n > 0 and math.floor(n) == n then
+          local fact = 1
+          for i = 1, n - 1 do fact = fact * i end
+          return fact
+        elseif n == 0.5 then
+          return math.sqrt(math.pi)
+        else
+          error("Gamma function not implemented for value: " .. tostring(n))
+        end
+      end
+
+      -- Delegate to physics evaluation if available
+      local phys_val = physics.eval_physics_func(node.name, node.args)
+      if phys_val ~= nil then
+        return ast.eval_numeric(phys_val, env)
+      end
+
+      error("Unknown function: " .. tostring(node.name))
+    else
+      return old_eval_numeric(node, env)
+    end
+  end
+
+  ast.eval_numeric = ast.eval_numeric
+end

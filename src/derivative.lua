@@ -143,6 +143,32 @@ local function diffAST(ast_node, var)
     -- Support both .arg (single) and .args (list) notation
     local u = ast_node.arg or (ast_node.args and ast_node.args[1])
     local du = diffAST(u, var)
+    -- Handle standard trig derivatives directly
+    if fname == "sin" then
+        return ast.mul(ast.func("cos", { copy(u) }), du)
+    elseif fname == "cos" then
+        return ast.neg(ast.mul(ast.func("sin", { copy(u) }), du))
+    elseif fname == "tan" then
+        return ast.mul(ast.pow(ast.func("sec", { copy(u) }), ast.number(2)), du)
+    elseif fname == "sec" then
+        return ast.mul(ast.mul(ast.func("sec", { copy(u) }), ast.func("tan", { copy(u) })), du)
+    elseif fname == "csc" then
+        return ast.neg(ast.mul(ast.func("csc", { copy(u) }), ast.func("cot", { copy(u) }), du))
+    elseif fname == "cot" then
+        return ast.neg(ast.mul(ast.pow(ast.func("csc", { copy(u) }), ast.number(2)), du))
+    elseif fname == "arcsin" then
+        return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du)
+    elseif fname == "arccos" then
+        return ast.neg(ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du))
+    elseif fname == "arctan" then
+        return ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
+    elseif fname == "arccsc" then
+        return ast.neg(ast.mul(ast.div(ast.number(1), ast.mul(ast.func("abs", { copy(u) }), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) }))), du))
+    elseif fname == "arcsec" then
+        return ast.mul(ast.div(ast.number(1), ast.mul(ast.func("abs", { copy(u) }), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) }))), du)
+    elseif fname == "arccot" then
+        return ast.neg(ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du))
+    end
     -- Use trig.lua for trigonometric differentiation if available
     if trig and trig.diff_trig_func then
       local trig_result = trig.diff_trig_func(fname, copy(u), du)
@@ -210,7 +236,11 @@ local function diffAST(ast_node, var)
       local fxh = ast.func(fname, { u_ph })
       local fx = ast.func(fname, { copy(u) })
       local nume = ast.sub(fxh, fx)
-      local quot = ast.div(nume, h)
+      local denom = copy(h)
+      if not denom or denom.type ~= "variable" then
+          denom = ast.symbol("__h__")
+      end
+      local quot = ast.div(nume, denom)
       return lim(quot, "__h__", ast.number(0))
     end
   end

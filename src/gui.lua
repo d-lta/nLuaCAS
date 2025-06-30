@@ -1,12 +1,241 @@
+_G.darkMode = (var.recall("dark_mode") == 1)
 
+-- Launch animation globals
+local n_logo = image.new(_R.IMG.n_logo)
+local luacas_text = image.new(_R.IMG.luacas_text)
+local scaleFactorLogo = 0.1 -- Adjusted smaller n logo
+local scaleFactorText = 0.035 -- Adjusted smaller LuaCAS text to match n height
+local nW, nH = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
+local luaW, luaH = image.width(luacas_text) * scaleFactorText, image.height(luacas_text) * scaleFactorText
+local launchStartTime = timer.getMilliSecCounter()
+local showLaunchAnim = true
+local logoX, textX = -100, -300
+local overlayAlpha = 1.0
+local overlayRegion = {x=270, y=8, w=90, h=24} -- Position this based on your layout
+local cursorInsideOverlay = false
+
+
+function syncCategoryFromStorage()
+    local cat = nil
+    if var and type(var.recall) == "function" then
+        cat = var.recall("current_constant_category")
+    end
+
+    if cat and type(cat) == "string" then
+        _G.current_constant_category = cat
+        _G.currentConstCategory = cat
+        print("[STATE] Recalled category from storage:", cat)
+    else
+        local fallback = gui.get_current_constant_category()
+        _G.current_constant_category = fallback
+        _G.currentConstCategory = fallback
+        print("[STATE] No stored category, using default:", fallback)
+    end
+
+    -- Always update GUI button text if it exists
+    if _G.categoryBtn then
+        _G.categoryBtn.text = _G.currentConstCategory
+        print("[DEBUG] Category button updated to:", _G.currentConstCategory)
+    end
+end
+
+function setupLaunchAnimation()
+    showLaunchAnim = true
+    launchStartTime = timer.getMilliSecCounter()
+    logoX = scrWidth + 100
+    textX = scrWidth + 300
+    timer.start(0.016)  -- Start approx. 60fps loop
+end
+var = var or {}
+var.store = var.store or {}
 local parser = rawget(_G, "parser")
 if not parser or not parser.parse then
   error("parser module or parser.parse not defined — ensure parser.lua is loaded before gui.lua")
 end
 local parse = parser.parse
 local simplify = rawget(_G, "simplify")
+local errors = _G.errors
+
+-- Ensure getLocaleText exists, fallback to identity
+local getLocaleText = rawget(_G, "getLocaleText") or function(key) return key end
+
+_G.autoDecimal = false
+_G.settingsBtnRegion = {x = 0, y = 0, w = 32, h = 32}
+-- Modal flag for settings
+_G.showSettingsModal = false
+_G.switchPressed = false
+_G.modalETKButton = nil
+_G.modalCloseBtnRegion = {x = 0, y = 0, w = 24, h = 24}
 -- Compatibility hack: unpack became table.unpack in newer Lua, because reasons
 unpack = unpack or table.unpack
+
+-- ====== Embedded Standalone ETK-style Button Widget ======
+
+Widgets = {}
+function applyEditorColors()
+    if fctEditor and fctEditor.editor then
+        local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+        local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
+        local border = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+
+        if fctEditor.editor.setBackgroundColor then
+            fctEditor.editor:setBackgroundColor(table.unpack(bg))
+        end
+        if fctEditor.editor.setTextColor then
+            fctEditor.editor:setTextColor(table.unpack(text))
+        end
+        if fctEditor.editor.setBorderColor then
+            fctEditor.editor:setBorderColor(table.unpack(border))
+        end
+        if fctEditor.editor.setOpaque then
+            fctEditor.editor:setOpaque(true)
+        end
+    end
+end
+-- Helper for unpacking color
+function unpackColor(t)
+  return t[1], t[2], t[3]
+end
+
+-- Helper for simple dimension (width, height)
+function Dimension(w, h)
+  return { width = w, height = h }
+end
+
+-- Helper event dispatcher
+function CallEvent(obj, name)
+  if obj[name] then obj[name](obj) end
+end
+
+-- ETK-style Button class
+Widgets.Button = class(Widget)
+local Button = Widgets.Button
+
+Button.defaultStyle = {
+  textColor       = {{000,000,000},{000,000,000}},
+  backgroundColor = {{248,252,248},{248,252,248}},
+  borderColor     = {{136,136,136},{160,160,160}},
+  focusColor      = {{040,148,184},{000,000,000}},
+  defaultWidth  = 48,
+  defaultHeight = 27,
+  font = {
+    serif="sansserif",
+    style="r",
+    size=10
+  }
+}
+
+function Button:init(arg)	
+  self.text = arg.text or "Button"
+  local style = arg.style or Button.defaultStyle or {
+    textColor       = {{0,0,0},{0,0,0}},
+    backgroundColor = {{248,252,248},{248,252,248}},
+    borderColor     = {{136,136,136},{160,160,160}},
+    focusColor      = {{40,148,184},{0,0,0}},
+    defaultWidth  = 48,
+    defaultHeight = 27,
+    font = {
+      serif="sansserif",
+      style="r",
+      size=10
+    }
+  }
+  self.style = style
+  self.dimension = arg.position or Dimension(style.defaultWidth or 48, style.defaultHeight or 27)
+  Widget.init(self, nil, self.dimension.width or style.defaultWidth, self.dimension.height or style.defaultHeight)
+  self.meDown = false
+  self.hasFocus = false
+  self.parent = arg.parent or nil
+  self.onAction = arg.onAction or nil
+end
+
+function Button:prepare(gc)
+  local font = self.style.font
+  gc:setFont(font.serif, font.style, font.size)
+  self.dimension.width = gc:getStringWidth(self.text) + 10
+end
+
+function Button:draw(gc, x, y, width, height, isColor)
+  if self.meDown then
+    y = y + 1
+  end
+
+  local color = isColor and 1 or 2
+  local style = self.style or Button.defaultStyle
+
+  local isDark = _G.darkMode
+local colorSet = isDark and {
+    backgroundColor = {50, 50, 50},
+    textColor = {220, 220, 220},
+    borderColor = {100, 100, 100},
+    focusColor = {80, 160, 220}
+} or {
+    backgroundColor = {248, 252, 248},
+    textColor = {0, 0, 0},
+    borderColor = {136, 136, 136},
+    focusColor = {40, 148, 184}
+}
+
+local bg = colorSet.backgroundColor
+local tc = colorSet.textColor
+local bc = colorSet.borderColor
+local fc = colorSet.focusColor
+
+  gc:setColorRGB(unpackColor(bg))
+  gc:fillRect(x + 2, y + 2, width - 4, height - 4)
+
+  gc:setColorRGB(unpackColor(tc))
+  gc:drawString(self.text, x + 5, y + 3, "top")
+
+  if self.hasFocus then
+    gc:setColorRGB(unpackColor(fc))
+    gc:setPen("medium", "smooth")
+  else
+    gc:setColorRGB(unpackColor(bc))
+    gc:setPen("thin", "smooth")
+  end
+
+  gc:fillRect(x + 2, y, width - 4, 2)
+  gc:fillRect(x + 2, y + height - 2, width - 4, 2)
+  gc:fillRect(x, y + 2, 1, height - 4)
+  gc:fillRect(x + 1, y + 1, 1, height - 2)
+  gc:fillRect(x + width - 1, y + 2, 1, height - 4)
+  gc:fillRect(x + width - 2, y + 1, 1, height - 2)
+
+  if self.hasFocus then
+    gc:setColorRGB(unpackColor(style.focusColor[color]))
+  end
+
+  gc:setPen("thin", "smooth")
+end
+
+function Button:doAction()
+  if self.parent and self.parent.invalidate then
+    self.parent:invalidate()
+  end
+  if self.onAction then
+    self.onAction(self)
+  else
+    CallEvent(self, "onAction")
+  end
+end
+
+function Button:onMouseDown()
+  self.meDown = true
+end
+
+function Button:onMouseUp(x, y, onMe)
+  self.meDown = false
+  if onMe then
+    self:doAction()
+  end
+end
+
+function Button:enterKey()
+  self:doAction()
+end
+
+-- ====== END Standalone Button Widget ======
 -- ETK View System (lifted and tweaked from SuperSpire/S2.lua)
 defaultFocus = nil
 
@@ -803,6 +1032,24 @@ end
 function MathEditor:init(view, x, y, w, h, text)
 	RichTextEditor.init(self, view, x, y, w, h, text)
 	self.editor:setBorder(1)
+    -- Set dark/light mode colors at initialization, safely and consistently
+    if self.editor then
+        local areaBg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+        local areaBorder = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+        local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
+        if self.editor.setBackgroundColor then
+            self.editor:setBackgroundColor(table.unpack(areaBg))
+        end
+        if self.editor.setTextColor then
+            self.editor:setTextColor(table.unpack(text))
+        end
+        if self.editor.setBorderColor then
+            self.editor:setBorderColor(table.unpack(areaBorder))
+        end
+        if self.editor.setOpaque then
+            self.editor:setOpaque(true)
+        end
+    end
 	self.acceptsEnter = true
 	self.acceptsBackSpace = true
 	self.result = false
@@ -1026,12 +1273,33 @@ function on.backtabKey()
   if theView then theView:tabBackward(); reposView() end
 end
 
--- This one’s the brains of the operation. Parses input, handles edge cases,
--- pretends to understand integration, and maybe even returns something useful.
 function on.enterKey()
   if not fctEditor or not fctEditor.getExpression then return end
 
+  -- Recall the current constant category (do not set default here)
+  local recalled = var.recall and var.recall("current_constant_category")
+  if recalled ~= nil then
+    current_constant_category = recalled
+    print("[INIT] Recalled constant category: " .. tostring(current_constant_category))
+  else
+    print("[INIT] Recall failed or value was nil; skipping default set")
+  end
+
   local input = fctEditor:getExpression()
+  -- Check for custom snarky responses
+  local joke = _G.errors.get(input)
+  if joke then
+    result = joke
+    addME(input, result, "normal")
+    if fctEditor and fctEditor.editor then
+      fctEditor.editor:setText("")
+      fctEditor:fixContent()
+    end
+    if platform and platform.window and platform.window.invalidate then
+      platform.window:invalidate()
+    end
+    return
+  end
   -- Fix TI-style derivative notation like ((d)/(dx(x^2))) to diff(x^2, x)
   input = input:gsub("%(%(d%)%)%/%(d([a-zA-Z])%((.-)%)%)%)", function(var, inner)
     _G.__diff_var = var
@@ -1044,76 +1312,110 @@ function on.enterKey()
 
   local result = ""
   _G.luaCASerror = false
+  local function get_constant_value(fname)
+    local physics_constants = _G.physics_constants or {}
+    local avail = var.recall and var.recall("available_constants") or {}
+    local is_enabled = (avail == nil) or (avail[fname] == true)
+    -- Retrieve current category for this resolution
+    local cat = var.recall and var.recall("current_constant_category")
+    print("[DEBUG] Category set to:", tostring(cat))
+    if physics_constants[fname]
+      and is_enabled
+      and physics_constants[fname].category == cat then
+      return physics_constants[fname].value
+    end
+    return nil
+  end
+  local function eval_physics_func(fname)
+    local physics_constants = _G.physics_constants or {}
+    local avail = var.recall and var.recall("available_constants") or {}
+    local is_enabled = (avail == nil) or (avail[fname] == true)
+    -- Retrieve current category for this resolution
+    local cat = var.recall and var.recall("current_constant_category")
+    print("[DEBUG] Category set to:", tostring(cat))
+    if physics_constants[fname]
+      and is_enabled
+      and physics_constants[fname].category == cat then
+      return physics_constants[fname].value
+    end
+    return nil
+  end
+
   local success, err = pcall(function()
     if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
       local expr = input:match("d/d[xy]%((.+)%)")
-      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
-      if result == "Invalid format" then _G.luaCASerror = true end
+      result = expr and derivative(expr, _G.__diff_var) or errors.invalid("diff")
+      if result == errors.invalid("diff") then _G.luaCASerror = true end
     elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
       local expr = input:match("∂/∂x%((.+)%)")
-      result = expr and derivative(expr, _G.__diff_var) or "Invalid format"
-      if result == "Invalid format" then _G.luaCASerror = true end
+      result = expr and derivative(expr, _G.__diff_var) or errors.invalid("diff")
+      if result == errors.invalid("diff") then _G.luaCASerror = true end
     elseif input:match("^∂/∂[yz]%(.+%)$") then
       result = derivative(input, _G.__diff_var)
     elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
       result = integrate(parse(input:sub(4, -3)))
-    elseif input:sub(1,4) == "int(" and input:sub(-1) == ")" then
-      local expr = input:match("int%((.+)%)")
-      result = expr and integrate(parse(expr)) or "Invalid format"
-      if result == "Invalid format" then _G.luaCASerror = true end
     elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
       local eqn = input:match("solve%((.+)%)")
       if eqn and not eqn:find("=") then
         eqn = eqn .. "=0"
       end
-      result = eqn and solve(parse(eqn)) or "Invalid solve format"
-      if result == "Invalid solve format" then _G.luaCASerror = true end
+      result = eqn and solve(parse(eqn)) or errors.invalid("solve")
+      if result == errors.invalid("solve") then _G.luaCASerror = true end
     elseif input:sub(1,4) == "let" then
       result = define(input)
     elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
         local inner = input:match("expand%((.+)%)")
-        result = inner and expand(parse(inner)) or "Invalid expand format"
-        if result == "Invalid expand format" then _G.luaCASerror = true end
+        result = inner and expand(parse(inner)) or errors.invalid("expand")
+        if result == errors.invalid("expand") then _G.luaCASerror = true end
     elseif input:sub(1,5) == "subs(" and input:sub(-1) == ")" then
-        local inner, var, val = input:match("subs%(([^,]+),([^,]+),([^%)]+)%)")
-        result = (inner and var and val) and subs(parse(inner), var, val) or "Invalid subs format"
-        if result == "Invalid subs format" then _G.luaCASerror = true end
+        local inner, varname, val = input:match("subs%(([^,]+),([^,]+),([^%)]+)%)")
+        result = (inner and varname and val) and subs(parse(inner), varname, val) or errors.invalid("subs")
+        if result == errors.invalid("subs") then _G.luaCASerror = true end
     elseif input:sub(1,7) == "factor(" and input:sub(-1) == ")" then
         local inner = input:match("factor%((.+)%)")
-        result = inner and factor(parse(inner)) or "Invalid factor format"
-        if result == "Invalid factor format" then _G.luaCASerror = true end
+        result = inner and factor(parse(inner)) or errors.invalid("factor")
+        if result == errors.invalid("factor") then _G.luaCASerror = true end
     elseif input:sub(1,4) == "gcd(" and input:sub(-1) == ")" then
         local a, b = input:match("gcd%(([^,]+),([^%)]+)%)")
-        result = (a and b) and gcd(parse(a), parse(b)) or "Invalid gcd format"
-        if result == "Invalid gcd format" then _G.luaCASerror = true end
+        result = (a and b) and gcd(parse(a), parse(b)) or errors.invalid("gcd")
+        if result == errors.invalid("gcd") then _G.luaCASerror = true end
     elseif input:sub(1,4) == "lcm(" and input:sub(-1) == ")" then
         local a, b = input:match("lcm%(([^,]+),([^%)]+)%)")
-        result = (a and b) and lcm(parse(a), parse(b)) or "Invalid lcm format"
-        if result == "Invalid lcm format" then _G.luaCASerror = true end
+        result = (a and b) and lcm(parse(a), parse(b)) or errors.invalid("lcm")
+        if result == errors.invalid("lcm") then _G.luaCASerror = true end
     elseif input:sub(1,7) == "trigid(" and input:sub(-1) == ")" then
         local inner = input:match("trigid%((.+)%)")
-        result = inner and trigid(parse(inner)) or "Invalid trigid format"
-        if result == "Invalid trigid format" then _G.luaCASerror = true end
+        result = inner and trigid(parse(inner)) or errors.invalid("trigid")
+        if result == errors.invalid("trigid") then _G.luaCASerror = true end
     elseif input:match("%w+%(.+%)") then
+      print("[DEBUG] Category set to:", var.recall("current_constant_category"))
       result = simplify.simplify(parse(input))
     elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
       local inner = input:match("simplify%((.+)%)")
-      result = inner and simplify.simplify(parse(inner)) or "Invalid simplify format"
-      if result == "Invalid simplify format" then _G.luaCASerror = true end
+      print("[DEBUG] Category set to:", var.recall("current_constant_category"))
+      result = inner and simplify.simplify(parse(inner)) or errors.invalid("simplify")
+      if result == errors.invalid("simplify") then _G.luaCASerror = true end
     -- Fallback parser for diff(...) and integrate(...)
     elseif input:match("^diff%(([^,]+),([^,%)]+)%)$") then
       local a, b = input:match("^diff%(([^,]+),([^,%)]+)%)$")
-      result = (a and b) and derivative(parse(a), b) or "Invalid diff() format"
-      if result == "Invalid diff() format" then _G.luaCASerror = true end
+      result = (a and b) and derivative(parse(a), b) or errors.invalid("diff")
+      if result == errors.invalid("diff") then _G.luaCASerror = true end
     elseif _G.__diff_var then
       result = derivative(input, _G.__diff_var)
       _G.__diff_var = nil
     elseif input:match("^integrate%(([^,]+),([^,%)]+)%)$") then
       local a, b = input:match("^integrate%(([^,]+),([^,%)]+)%)$")
-      result = (a and b) and integrate(parse(a), b) or "Invalid integrate() format"
-      if result == "Invalid integrate() format" then _G.luaCASerror = true end
+      result = (a and b) and integrate(parse(a), b) or errors.invalid("int")
+      if result == errors.invalid("int") then _G.luaCASerror = true end
     else
-      result = simplify.simplify(parse(input))
+      -- Try constant resolution
+      local constval = get_constant_value(input)
+      if constval ~= nil then
+        result = constval
+      else
+        print("[DEBUG] Category set to:", var.recall("current_constant_category"))
+        result = simplify.simplify(parse(input))
+      end
     end
     if result == "" or not result then
       result = "No result. Internal CAS fallback used."
@@ -1159,10 +1461,118 @@ function on.mouseMove(x, y)
 end
 
 function on.mouseDown(x, y)
+  -- Modal close "X" button
+  if _G.showSettingsModal and _G.modalCloseBtnRegion then
+    local r = _G.modalCloseBtnRegion
+    if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+      _G.showSettingsModal = false
+      platform.window:invalidate()
+      return
+    end
+  end
+  -- Handle custom settings icon button click
+  if _G.settingsBtnRegion then
+    local r = _G.settingsBtnRegion
+    if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+      if not _G.showSettingsModal then
+        _G.showSettingsModal = true
+        platform.window:invalidate()
+      end
+      return
+    end
+  end
+  -- Modal ETK Button mouseDown
+  if _G.showSettingsModal and _G.modalETKButton then
+    local btn = _G.modalETKButton
+    local btnW = btn.dimension.width or 80
+    local btnH = btn.dimension.height or 28
+    local modalW, modalH = 200, 120
+    local modalX = (scrWidth - modalW) / 2
+    local modalY = (scrHeight - modalH) / 2
+    local btnX = modalX + (modalW - btnW) / 2
+    local btnY = modalY + 54
+    if x >= btnX and x <= btnX + btnW and y >= btnY and y <= btnY + btnH then
+      btn:onMouseDown()
+      platform.window:invalidate()
+      return
+    end
+  end
+  -- Toggle switch press effect when settings modal is open
+  if _G.showSettingsModal and _G.switchRegion then
+    local r = _G.switchRegion
+    if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+      _G.switchPressed = true
+      platform.window:invalidate()
+      return
+    end
+  end
   if theView then theView:onMouseDown(x, y) end
 end
 
 function on.mouseUp(x, y)
+  -- Consistent modal button hitboxes using visible regions
+  if _G.showSettingsModal then
+    local modalW, modalH = 200, 200
+    local modalX = (scrWidth - modalW) / 2
+    local modalY = (scrHeight - modalH) / 2
+    local labelX = modalX + 10
+    local labelY = modalY + 40
+    local lineHeight = 28
+    local btnW, btnH = 48, 22
+
+    -- Decimals Button
+    local decBtnX = labelX + getStringWidth("Decimals:") + 10
+    local decBtnY = labelY - 2
+    if x >= decBtnX and x <= decBtnX + btnW and y >= decBtnY and y <= decBtnY + btnH then
+      _G.modalETKButton:onMouseUp(x - decBtnX, y - decBtnY, true)
+      platform.window:invalidate()
+      return
+    end
+
+    -- Constants Button
+    local consLabelY = labelY + lineHeight
+    local consBtnX = labelX + getStringWidth("Constants:") + 10
+    local consBtnY = consLabelY - 2
+    if x >= consBtnX and x <= consBtnX + btnW and y >= consBtnY and y <= consBtnY + btnH then
+      _G.constantsToggleBtn:onMouseUp(x - consBtnX, y - consBtnY, true)
+      platform.window:invalidate()
+      return
+    end
+
+    -- Dark Mode Button
+    local darkLabelY = consLabelY + lineHeight
+    local darkBtnX = labelX + getStringWidth("Dark Mode:") + 10
+    local darkBtnY = darkLabelY - 2
+    if x >= darkBtnX and x <= darkBtnX + btnW and y >= darkBtnY and y <= darkBtnY + btnH then
+      _G.darkModeToggleBtn:onMouseUp(x - darkBtnX, y - darkBtnY, true)
+      platform.window:invalidate()
+      return
+    end
+
+    -- Category Button
+    local catLabelY = darkLabelY + lineHeight
+    local catBtnX = labelX + getStringWidth("Category:") + 10
+    local catBtnY = catLabelY - 2
+    if x >= catBtnX and x <= catBtnX + 90 and y >= catBtnY and y <= catBtnY + btnH then
+      _G.categoryBtn:onMouseUp(x - catBtnX, y - catBtnY, true)
+      platform.window:invalidate()
+      return
+    end
+
+    -- Constants List Toggles
+    local listY = catLabelY + lineHeight
+    local avail = var.recall("available_constants") or {}
+    local clist = get_constants_by_category(_G.currentConstCategory)
+    for i, name in ipairs(clist) do
+      local cy = listY + (i - 1) * 15
+      if y >= cy and y <= cy + 15 and x >= labelX and x <= labelX + 200 then
+        avail[name] = not (avail[name] == true)
+        var.store("available_constants", avail)
+        platform.window:invalidate()
+        return
+      end
+    end
+  end
   if theView then theView:onMouseUp(x, y) end
 end
 
@@ -1388,6 +1798,21 @@ function initGUI()
 
         -- Input editor at bottom (MathEditor)
         fctEditor = MathEditor(theView, 2, border, scrWidth - 4 - sbv.w, 30, "")
+        -- Safely set editor colors if method exists (using consistent logic from applyEditorColors)
+        if fctEditor and fctEditor.editor then
+            local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+            if fctEditor.editor.setBackgroundColor then
+                fctEditor.editor:setBackgroundColor(table.unpack(bg))
+            end
+            local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
+            local border = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+            if fctEditor.editor.setTextColor then
+                fctEditor.editor:setTextColor(table.unpack(text))
+            end
+            if fctEditor.editor.setBorderColor then
+                fctEditor.editor:setBorderColor(table.unpack(border))
+            end
+        end
         fctEditor:setHConstraints("justify", 1)
         fctEditor:setVConstraints("bottom", 1)
         fctEditor.editor:setSizeChangeListener(function(editor, w, h)
@@ -1400,6 +1825,12 @@ function initGUI()
 
         -- First-focus is input editor
         theView:setFocus(fctEditor)
+
+        -- Sync category state and update button after GUI is ready (not in launch animation)
+        syncCategoryFromStorage()
+        if _G.categoryBtn then
+            _G.categoryBtn.text = _G.currentConstCategory
+        end
         inited = true
     end
 
@@ -1430,7 +1861,7 @@ end
 forcefocus = true
 
 function on.activate()
-	forcefocus = true
+  setupLaunchAnimation()
 end
 
 dispinfos = true
@@ -1438,59 +1869,319 @@ dispinfos = true
 -- The main UI rendering phase: draws status, output, and all widgets.
 -- If you’re looking for where the magic (or horror) happens, it’s here.
 function on.paint(gc)
-	if not inited then
-		initGUI()
-		initFontGC(gc)
-		strFullHeight = gc:getStringHeight("H")
-		strHeight = strFullHeight - 3
-	end
-	if inited then
-		-- Removed display of "Last: ..." result at the top
-		local obj = theView:getFocus()
-		initFontGC(gc)
-		if not obj then theView:setFocus(fctEditor) end
-		if (forcefocus) then
-			if obj == fctEditor then
-				fctEditor.editor:setFocus(true)
-				if fctEditor.editor:hasFocus() then forcefocus = false end
-			else
-				forcefocus = false
-			end
-		end
-		if dispinfos then
-			-- Draw status box: green if OK, red if error, always visible top left
-			local engineStatus = "LuaCAS Engine: Enabled"
-			local statusColor = {0, 127, 0} -- green
-			if _G.luaCASerror then
-				engineStatus = "LuaCAS Engine: NONE"
-				statusColor = {200, 0, 0} -- red
-			end
-			local boxX, boxY = 8, 8
-			local boxPaddingX, boxPaddingY = 10, 3
-			local fontToUse = "sansserif"
-			local fontStyle = "b"
-			local fontSize = 11
-			gc:setFont(fontToUse, fontStyle, fontSize)
-			local textW = gc:getStringWidth(engineStatus)
-			local textH = gc:getStringHeight(engineStatus)
-			gc:setColorRGB(statusColor[1], statusColor[2], statusColor[3])
-			gc:fillRect(boxX, boxY, textW + boxPaddingX * 2, textH + boxPaddingY * 2)
-			gc:setColorRGB(255,255,255)
-			gc:drawString(engineStatus, boxX + boxPaddingX, boxY + boxPaddingY, "top")
-			-- restore font for rest of UI
-			gc:setFont(font, style, fsize)
-		end
-		-- Output string fallback for "main" view
-		if true then -- "main" view block
-			local output = fctEditor and fctEditor.result
-			-- local outputStr = output or ""
-			local outputStr = (output and output ~= "") and output or "(no output)"
-			-- If you want to draw the output somewhere, do so here.
-			gc:setColorRGB(0, 127, 0)
-			gc:drawString(outputStr, 10, scrHeight - 25, "top")
-		end
-		theView:paint(gc)
-	end
+    -- Launch animation block (runs before normal UI)
+    if showLaunchAnim then
+        local now = timer.getMilliSecCounter()
+        local dt = now - launchStartTime
+
+        -- Hide the D2Editor while launch animation is running
+        if fctEditor and fctEditor.editor then
+            fctEditor.editor:setVisible(false)
+        end
+
+        -- White background
+        gc:setColorRGB(255, 255, 255)
+        gc:fillRect(0, 0, scrWidth, scrHeight)
+
+        -- Ensure assets exist
+        if n_logo and luacas_text then
+
+            -- Animate n_logo: from off-screen right to x = 50
+            local logoStartX = scrWidth + 100
+            local logoEndX = 20
+            if dt < 1000 then
+                logoX = logoStartX - (dt / 1000) * (logoStartX - logoEndX)
+            else
+                logoX = logoEndX
+            end
+
+            -- Animate luacas_text: from off-screen right to x = close to n_logo, starts after n_logo
+            local textStartX = scrWidth + 300
+            -- Use the same scale factors as globals for animation
+            local logoWidth, logoHeight = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
+            local textWidth, textHeight = image.width(luacas_text) * scaleFactorText, image.height(luacas_text) * scaleFactorText
+            local textEndX = logoEndX + logoWidth + 30
+            if dt >= 1000 and dt < 2000 then
+                local textDt = dt - 1000
+                textX = textStartX - (textDt / 1000) * (textStartX - textEndX)
+            elseif dt >= 2000 then
+                textX = textEndX
+            end
+
+            -- Draw images if within their time windows, scale logo and text to match global scaling
+            local baseY = 100
+            local baseYText = 77
+
+            if dt >= 0 then
+                gc:drawImage(n_logo, logoX, baseY, logoWidth, logoHeight)
+            end
+            if dt >= 100 then
+                gc:drawImage(luacas_text, textX, baseYText, textWidth, textHeight)
+            end
+
+            -- End animation after both complete
+            if dt >= 2500 then
+                showLaunchAnim = false
+                -- Restore D2Editor visibility after animation ends
+                if fctEditor and fctEditor.editor then
+                    fctEditor.editor:setVisible(true)
+                end
+                timer.stop(tick)
+                platform.window:invalidate()
+            end
+        end
+
+        -- Remove invalidate from here; handled by timer for smooth animation
+        return
+    end
+
+    if not inited then
+        initGUI()
+        initFontGC(gc)
+        strFullHeight = gc:getStringHeight("H")
+        strHeight = strFullHeight - 3
+    end
+    if inited then
+        -- Global dark mode background
+        local globalBg = _G.darkMode and {20, 20, 20} or {255, 255, 255}
+        gc:setColorRGB(unpackColor(globalBg))
+        gc:fillRect(0, 0, scrWidth, scrHeight)
+
+        -- Removed display of "Last: ..." result at the top
+        local obj = theView:getFocus()
+        initFontGC(gc)
+        if not obj then theView:setFocus(fctEditor) end
+        if (forcefocus) then
+            if obj == fctEditor then
+                fctEditor.editor:setFocus(true)
+                if fctEditor.editor:hasFocus() then forcefocus = false end
+            else
+                forcefocus = false
+            end
+        end
+        if dispinfos then
+            -- (Logo image block removed for customization)
+        end
+        -- Output string fallback for "main" view
+        if true then -- "main" view block
+            local output = fctEditor and fctEditor.result
+            local outputStr = (output and output ~= "") and output or "(no output)"
+            -- Draw output in white for dark mode, black for light mode
+            gc:setColorRGB(_G.darkMode and 255 or 0, _G.darkMode and 255 or 0, _G.darkMode and 255 or 0)
+            gc:drawString(outputStr, 10, scrHeight - 25, "top")
+        end
+        -- Draw custom settings icon button at top right if modal not open
+        if not _G.showSettingsModal then
+            local btnSize = 24
+            local btnX = scrWidth - btnSize - 8
+            local btnY = 8
+            _G.settingsBtnRegion = {x = btnX, y = btnY, w = btnSize, h = btnSize}
+
+            -- Button background, border, and icon color respecting dark mode
+            local bg = _G.darkMode and {50, 50, 50} or {255, 255, 255}
+            local border = _G.darkMode and {150, 150, 150} or {94, 103, 111}
+            local iconColor = _G.darkMode and {220, 220, 220} or {0, 0, 0}
+
+            gc:setColorRGB(table.unpack(bg))
+            gc:fillRect(btnX, btnY, btnSize, btnSize)
+            gc:setColorRGB(table.unpack(border))
+            gc:drawRect(btnX, btnY, btnSize, btnSize)
+
+            -- Centered symbol (π for settings)
+            local symbol = "π"   -- Change to "." or "⋅" or "⚙" for different icons
+            gc:setFont("sansserif", "b", 16)
+            local textW = gc:getStringWidth(symbol)
+            local textH = gc:getStringHeight(symbol)
+            local centerX = btnX + (btnSize - textW) / 2
+            local centerY = btnY + (btnSize - textH) / 2
+            gc:setColorRGB(table.unpack(iconColor))
+            gc:drawString(symbol, centerX, centerY, "top")
+        end
+        theView:paint(gc)
+
+        -- Draw the bottom input area background fully respecting dark mode (after theView:paint)
+        do
+            -- Use pure white and black in light mode, no blue tint
+            local areaBg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+            local areaBorder = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+            local boxY = fctEditor.y - 2
+            local boxH = fctEditor.h + 4
+            gc:setColorRGB(table.unpack(areaBg))
+            gc:fillRect(0, boxY, scrWidth, boxH)
+            gc:setColorRGB(table.unpack(areaBorder))
+            gc:drawRect(0, boxY, scrWidth, boxH)
+            -- Immediately override editor background, text, and border for safety and consistency
+            if fctEditor and fctEditor.editor and fctEditor.editor.setBackgroundColor then
+                local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+                local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
+                local border = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+                fctEditor.editor:setBackgroundColor(table.unpack(bg))
+                if fctEditor.editor.setTextColor then
+                    fctEditor.editor:setTextColor(table.unpack(text))
+                end
+                if fctEditor.editor.setBorderColor then
+                    fctEditor.editor:setBorderColor(table.unpack(border))
+                end
+            end
+        end
+
+        -- Draw settings modal if enabled (block moved to end)
+    end
+    -- Draw settings modal if enabled (moved here to render on top)
+    if _G.showSettingsModal then
+        local modalW, modalH = 200, 200
+        local modalX = (scrWidth - modalW) / 2
+        local modalY = (scrHeight - modalH) / 2
+
+        local modalBg = _G.darkMode and {30, 30, 30} or {240, 240, 240}
+        local modalBorder = _G.darkMode and {200, 200, 200} or {0, 0, 0}
+        local modalText = _G.darkMode and {220, 220, 220} or {0, 0, 0}
+
+        gc:setColorRGB(unpackColor(modalBg))
+        gc:fillRect(modalX, modalY, modalW, modalH)
+        gc:setColorRGB(unpackColor(modalBorder))
+        gc:drawRect(modalX, modalY, modalW, modalH)
+        gc:setColorRGB(unpackColor(modalText))
+        gc:drawString("Settings", modalX + 10, modalY + 10, "top")
+        gc:setFont("sansserif", "i", 9)
+        gc:setColorRGB(255, 100, 100)
+        gc:drawString("(Dark Mode is experimental)", modalX + 10, modalY + 26, "top")
+        gc:setFont("sansserif", "r", 12)
+        gc:setColorRGB(unpackColor(modalText))
+
+        local closeBtnSize = 24
+        local closeX = modalX + modalW - closeBtnSize - 6
+        local closeY = modalY + 6
+        _G.modalCloseBtnRegion = { x = closeX, y = closeY, w = closeBtnSize, h = closeBtnSize }
+        gc:setColorRGB(200, 40, 40)
+        gc:fillRect(closeX, closeY, closeBtnSize, closeBtnSize)
+        gc:setColorRGB(255, 255, 255)
+        gc:setFont("sansserif", "b", 16)
+        local xw = gc:getStringWidth("×")
+        local xh = gc:getStringHeight("×")
+        gc:drawString("×", closeX + (closeBtnSize - xw) / 2, closeY + (closeBtnSize - xh) / 2, "top")
+
+        local labelX = modalX + 10
+        local labelY = modalY + 40
+        local lineHeight = 28
+        local btnW, btnH = 48, 22
+
+        gc:setColorRGB(unpackColor(modalText))
+        gc:setFont("sansserif", "r", 12)
+
+        -- Decimals Toggle
+        gc:drawString("Decimals:", labelX, labelY, "top")
+        local btnX = labelX + gc:getStringWidth("Decimals:") + 10
+        local btnY = labelY - 2
+        if not _G.modalETKButton then
+            _G.modalETKButton = Widgets.Button{
+                text = (_G.autoDecimal and "ON" or "OFF"),
+                position = Dimension(btnW, btnH),
+                parent = theView,
+                onAction = function(self)
+                    _G.autoDecimal = not _G.autoDecimal
+                    self.text = (_G.autoDecimal and "ON" or "OFF")
+                    var.store("nLuaCAS_decimals_pref", _G.autoDecimal and 1 or 0)
+                    platform.window:invalidate()
+                end
+            }
+        end
+        _G.modalETKButton.text = (_G.autoDecimal and "ON" or "OFF")
+        _G.modalETKButton:draw(gc, btnX, btnY, btnW, btnH)
+
+        -- Constants Toggle
+        local consLabelY = labelY + lineHeight
+        gc:drawString("Constants:", labelX, consLabelY, "top")
+        local consBtnX = btnX
+        local consBtnY = consLabelY - 2
+        if not _G.constantsToggleBtn then
+            _G.constantsToggleBtn = Widgets.Button{
+                text = (not var.recall("constants_off") and "ON" or "OFF"),
+                position = Dimension(btnW, btnH),
+                parent = theView,
+                onAction = function(self)
+                    local new_off = not var.recall("constants_off")
+                    var.store("constants_off", new_off)
+                    self.text = (not new_off and "ON" or "OFF")
+                    platform.window:invalidate()
+                end
+            }
+        end
+        _G.constantsToggleBtn.text = (not var.recall("constants_off") and "ON" or "OFF")
+        _G.constantsToggleBtn:draw(gc, consBtnX, consBtnY, btnW, btnH)
+
+        -- Dark Mode Toggle
+        local darkLabelY = consLabelY + lineHeight
+        gc:drawString("Dark Mode:", labelX, darkLabelY, "top")
+        local darkBtnX = btnX
+        local darkBtnY = darkLabelY - 2
+        if not _G.darkModeToggleBtn then
+            _G.darkModeToggleBtn = Widgets.Button{
+                text = (_G.darkMode and "ON" or "OFF"),
+                position = Dimension(btnW, btnH),
+                parent = theView,
+                onAction = function(self)
+                    _G.darkMode = not _G.darkMode
+                    var.store("dark_mode", _G.darkMode and 1 or 0)
+                    applyEditorColors()
+                    platform.window:setBackgroundColor(_G.darkMode and 0x1E1E1E or 0xFFFFFF)
+                    applyEditorColors()
+                    platform.window:invalidate()
+                end
+            }
+        end
+        _G.darkModeToggleBtn.text = (_G.darkMode and "ON" or "OFF")
+        _G.darkModeToggleBtn:draw(gc, darkBtnX, darkBtnY, btnW, btnH)
+
+        -- Category Selector
+        local catLabelY = darkLabelY + lineHeight
+        gc:drawString("Category:", labelX, catLabelY, "top")
+        local catBtnX = btnX
+        local catBtnY = catLabelY - 2
+        local categories = get_constant_categories()
+        -- Always sync currentConstCategory to storage at render time
+        if not _G.categoryBtn then
+            local initialCat = gui.get_current_constant_category()
+            _G.currentConstCategory = initialCat
+            _G.current_constant_category = initialCat
+            _G.categoryBtn = Widgets.Button{
+                text = initialCat,
+                position = Dimension(90, btnH),
+                parent = theView,
+                onAction = function(self)
+                    local idx = 1
+                    for i, v in ipairs(categories) do
+                        if v == _G.currentConstCategory then idx = i end
+                    end
+                    local selected = categories[(idx % #categories) + 1]
+                    _G.currentConstCategory = selected
+                    _G.current_constant_category = selected
+
+                    print("[VAR] Saving category:", selected)
+                    var.store("current_constant_category", selected)
+                    print("[VAR] Immediately recalling category:", var.recall("current_constant_category"))
+
+                    self.text = selected
+                    platform.window:invalidate()
+                    print("[STATE] Stored category to storage:", _G.currentConstCategory)
+                end
+            }
+        end
+        _G.categoryBtn.text = _G.currentConstCategory
+        _G.categoryBtn:draw(gc, catBtnX, catBtnY, 90, btnH)
+
+        -- Constants List
+        local listY = catLabelY + lineHeight
+        local avail = var.recall("available_constants") or {}
+        local clist = get_constants_by_category(_G.currentConstCategory)
+
+        for i, name in ipairs(clist) do
+            local cy = listY + (i - 1) * 15
+            local enabled = (avail == nil) or (avail[name] == true)
+            gc:setColorRGB(unpackColor(modalText))
+            gc:drawString((enabled and "[✓] " or "[ ] ") .. name, labelX, cy, "top")
+        end
+    end
 end
 
 font = "sansserif"
@@ -1564,7 +2255,54 @@ function addME(expr, res, colorHint)
 	mer:fixCursor()
 	mer.editor:setReadOnly(true)
 	theView:add(mer)
+
+    -- Set dark/light mode colors for both new MathEditors (mee, mer) consistently
+    local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
+    local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
+    local border = _G.darkMode and {100, 100, 100} or {0, 0, 0}
+    for _, editor in ipairs({mee.editor, mer.editor}) do
+        if editor.setBackgroundColor then
+            editor:setBackgroundColor(table.unpack(bg))
+        end
+        if editor.setTextColor then
+            editor:setTextColor(table.unpack(text))
+        end
+        if editor.setBorderColor then
+            editor:setBorderColor(table.unpack(border))
+        end
+        if editor.setOpaque then
+            editor:setOpaque(true)
+        end
+    end
+
 	reposME()
 
 -- Any unhandled errors will cause LuaCAS Engine status to go NONE (red)
+end
+-- Make var globally accessible for parser/physics.lua
+_G.var = var
+
+function on.construction()
+  setupLaunchAnimation()
+end
+function on.timer()
+    if showLaunchAnim then
+        platform.window:invalidate()
+    else
+        timer.stop()
+    end
+end
+_G.gui = _G.gui or {}
+
+function _G.gui.get_current_constant_category()
+    -- Priority: in-memory global -> storage -> default
+    if _G.current_constant_category and type(_G.current_constant_category) == "string" then
+        return _G.current_constant_category
+    end
+    local cat = var.recall and var.recall("current_constant_category")
+    if cat and type(cat) == "string" then
+        _G.current_constant_category = cat
+        return cat
+    end
+    return "fundamental"
 end
