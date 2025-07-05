@@ -507,6 +507,15 @@ _G.ast = ast
 
 
 
+
+
+-- Wildcard pattern constructor for integration matching
+function ast_wildcard(varname)
+    return { var = varname }
+end
+ast.wildcard = ast_wildcard
+_G.wildcard = ast_wildcard
+
 _G.ast_debug_print = ast_debug_print
 
 

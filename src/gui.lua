@@ -1,5 +1,11 @@
 _G.darkMode = (var.recall("dark_mode") == 1)
+_G.showLaunchAnimation = (var.recall("nLuaCAS_launch_anim_pref") == 1)
 
+function getStringWidth(text)
+    return platform.withGC(function(gc) return gc:getStringWidth(text) end, text)
+end
+_G.precisionInputActive = false
+_G.showComplex = (var.recall("nLuaCAS_complex_pref") == 1)
 -- Launch animation globals
 local n_logo = image.new(_R.IMG.n_logo)
 local luacas_text = image.new(_R.IMG.luacas_text)
@@ -8,7 +14,9 @@ local scaleFactorText = 0.035 -- Adjusted smaller LuaCAS text to match n height
 local nW, nH = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
 local luaW, luaH = image.width(luacas_text) * scaleFactorText, image.height(luacas_text) * scaleFactorText
 local launchStartTime = timer.getMilliSecCounter()
-local showLaunchAnim = true
+-- Recall launch animation preference: 1 for show, 0 for hide. Default to show if not set.
+
+local showLaunchAnim = _G.showLaunchAnimation -- Initialize local variable based on global preference
 local logoX, textX = -100, -300
 local overlayAlpha = 1.0
 local overlayRegion = {x=270, y=8, w=90, h=24} -- Position this based on your layout
@@ -40,11 +48,16 @@ function syncCategoryFromStorage()
 end
 
 function setupLaunchAnimation()
-    showLaunchAnim = true
-    launchStartTime = timer.getMilliSecCounter()
-    logoX = scrWidth + 100
-    textX = scrWidth + 300
-    timer.start(0.016)  -- Start approx. 60fps loop
+    if showLaunchAnim then
+        -- Start a timer to drive the animation. You need a variable to store the timer ID.
+        animationTimerId = timer.start(10) -- Set a small interval like 10ms for smooth animation
+    else
+        -- If animation is off, immediately make the editor visible
+        if fctEditor and fctEditor.editor then
+            fctEditor.editor:setVisible(true)
+        end
+        platform.window:invalidate() -- Force a redraw to ensure editor is shown
+    end
 end
 var = var or {}
 var.store = var.store or {}
@@ -63,6 +76,11 @@ _G.autoDecimal = false
 _G.settingsBtnRegion = {x = 0, y = 0, w = 32, h = 32}
 -- Modal flag for settings
 _G.showSettingsModal = false
+_G.showHelpModal = false
+_G.showStartupHint = true
+if var and var.recall and var.recall("hide_startup_hint") == 1 then
+    _G.showStartupHint = false
+end
 _G.switchPressed = false
 _G.modalETKButton = nil
 _G.modalCloseBtnRegion = {x = 0, y = 0, w = 24, h = 24}
@@ -954,7 +972,140 @@ function TextLabel:paint(gc, focused)
 	gc:setColorRGB(0, 0, 0)
 	gc:drawString(self.text, self.x, self.y, "top")
 end
+MenuWidget = class(Widget)
 
+function MenuWidget:init(view, x, y, items, onSelect)
+    local w = 120
+    local h = #items * 22
+    Widget.init(self, view, x, y, w, h)
+    self.items = items or {}
+    self.selected = 1
+    self.onSelect = onSelect or function(idx, text) end
+    self.visible = true
+    self.acceptsFocus = true
+    self.acceptsArrowUp = true
+    self.acceptsArrowDown = true
+    self.acceptsEnter = true
+    self.acceptsEscape = true
+    self.muted = false
+    self.submenus = nil
+end
+
+function MenuWidget:paint(gc, focused)
+    if not self.visible then return end
+
+    -- Menu background - because invisible menus are so last century
+    local bgColor = _G.darkMode and {40, 40, 40} or {255, 255, 255}
+    if self.muted then for i=1,3 do bgColor[i] = bgColor[i] * 0.6 end end
+    gc:setColorRGB(table.unpack(bgColor))
+    gc:fillRect(self.x, self.y, self.w, self.h)
+
+    -- Menu border - the thin line between chaos and order
+    gc:setColorRGB(0, 0, 0)
+    gc:drawRect(self.x, self.y, self.w, self.h)
+
+    -- Menu items - the actual reason this thing exists
+    for i, text in ipairs(self.items) do
+        local itemY = self.y + (i-1) * 22
+
+        -- Highlight selected item
+        if i == self.selected then
+            gc:setColorRGB(180, 200, 255)
+            gc:fillRect(self.x + 1, itemY + 1, self.w - 2, 20)
+        end
+
+        gc:setFont("sansserif", "r", 11)
+        gc:setColorRGB(_G.darkMode and 180 or 32, _G.darkMode and 180 or 32, _G.darkMode and 210 or 32)
+
+        -- Decorative Icon on root menu only
+        if self.level == 1 then
+            -- Precise vertical centering for icon and text
+            local iconX = self.x + 6
+            local iconText = ""
+            if text == "Calculus" then
+                iconText = "∫"
+            elseif text == "Solve" then
+                iconText = "x"
+            elseif text == "Settings" then
+                iconText = "S"
+            elseif text == "Help" then
+                iconText = "?"
+            end
+            gc:setFont("sansserif", "b", 10)
+            local ih = gc:getStringHeight(iconText)
+            gc:setFont("sansserif", "r", 11)
+            local th = gc:getStringHeight(text)
+            local iconY = itemY + (th - ih) / 2 - 1
+            gc:setFont("sansserif", "b", 10)
+            gc:drawString(iconText, iconX, iconY, "top")
+            gc:setFont("sansserif", "r", 11)
+            gc:drawString(text, self.x + 22, itemY - 1, "top")
+        else
+            gc:drawString(text, self.x + 12, itemY - 1, "top")
+        end
+
+        if self.submenus and self.submenus[text] then
+            gc:setFont("sansserif","b",11)
+            local arrowCol = _G.darkMode and {200,200,200} or {64,64,64}
+            gc:setColorRGB(table.unpack(arrowCol))
+            gc:drawString("▶", self.x + self.w - 12, itemY - 1, "top")
+        end
+    end
+end
+
+function MenuWidget:onMouseDown(view, window, x, y)
+    if not self:contains(x + self.x, y + self.y) then return end
+    
+    local relY = y
+    local idx = math.floor(relY / 22) + 1
+    
+    if idx >= 1 and idx <= #self.items then
+        self.selected = idx
+        if self.onSelect then 
+            self.onSelect(idx, self.items[idx]) 
+        end
+    end
+    
+    local text = self.items[self.selected]
+    -- Only hide when there is no submenu for this item
+    if not (self.submenus and self.submenus[text]) then
+        self.visible = false
+        if self.view and self.view.invalidate then
+            self.view:invalidate()
+        end
+    end
+end
+
+function MenuWidget:arrowUpHandler()
+    self.selected = math.max(1, self.selected - 1)
+    if self.view and self.view.invalidate then
+        self.view:invalidate()
+    end
+end
+
+function MenuWidget:arrowDownHandler()
+    self.selected = math.min(#self.items, self.selected + 1)
+    if self.view and self.view.invalidate then
+        self.view:invalidate()
+    end
+end
+
+function MenuWidget:enterHandler()
+    if self.onSelect then 
+        self.onSelect(self.selected, self.items[self.selected]) 
+    end
+    self.visible = false
+    if self.view and self.view.invalidate then 
+        self.view:invalidate() 
+    end
+end
+
+function MenuWidget:escapeHandler()
+    self.visible = false
+    if self.view and self.view.invalidate then 
+        self.view:invalidate() 
+    end
+end
 -- Rich text editor widget. Handles text entry, but don't expect Microsoft Word.
 RichTextEditor = class(Widget)
 
@@ -1228,6 +1379,11 @@ function MathEditor:paint(gc)
 end
 
 function on.arrowUp()
+    if _G.menuStack and #_G.menuStack > 0 then
+        local m = _G.menuStack[#_G.menuStack]
+        m:arrowUpHandler()
+        return
+    end
   if theView then
     if theView:getFocus() == fctEditor then
       on.tabKey()
@@ -1240,6 +1396,11 @@ function on.arrowUp()
 end
 
 function on.arrowDown()
+    if _G.menuStack and #_G.menuStack > 0 then
+        local m = _G.menuStack[#_G.menuStack]
+        m:arrowDownHandler()
+        return
+    end
   if theView then
     on.backtabKey()
     if theView:getFocus() ~= fctEditor then on.backtabKey() end
@@ -1248,6 +1409,20 @@ function on.arrowDown()
 end
 
 function on.arrowLeft()
+    if _G.menuStack and #_G.menuStack > 0 then
+        local depth = #_G.menuStack
+        local m = _G.menuStack[depth]
+        theView:remove(m)
+        table.remove(_G.menuStack, depth)
+        if _G.menuStack and #_G.menuStack > 0 then
+            _G.menuStack[#_G.menuStack].muted = false
+            theView:setFocus(_G.menuStack[#_G.menuStack])
+        else
+            _G.menuStack = nil
+        end
+        theView:invalidate()
+        return
+    end
   if theView then
     on.tabKey()
     reposView()
@@ -1255,6 +1430,13 @@ function on.arrowLeft()
 end
 
 function on.arrowRight()
+    if _G.menuStack and #_G.menuStack > 0 then
+        local m = _G.menuStack[#_G.menuStack]
+        local idx = m.selected
+        local text = m.items[idx]
+        if m.onSelect then m.onSelect(idx, text) end
+        return
+    end
   if theView then
     on.backtabKey()
     reposView()
@@ -1262,7 +1444,13 @@ function on.arrowRight()
 end
 
 function on.charIn(ch)
-  if theView then theView:sendStringToFocus(ch) end
+    if _G.showSettingsModal and _G.precisionInputActive and ch:match("%d") then
+        var.store("nLuaCAS_precision_pref", tonumber(ch))
+        _G.precisionInputActive = false
+        platform.window:invalidate()
+        return
+    end
+    if theView then theView:sendStringToFocus(ch) end
 end
 
 function on.tabKey()
@@ -1274,6 +1462,11 @@ function on.backtabKey()
 end
 
 function on.enterKey()
+    -- If a menu is open, treat Enter as submenu/selection trigger
+    if _G.menuStack and #_G.menuStack > 0 then
+        on.arrowRight()
+        return
+    end
   if not fctEditor or not fctEditor.getExpression then return end
 
   -- Recall the current constant category (do not set default here)
@@ -1470,16 +1663,32 @@ function on.mouseDown(x, y)
       return
     end
   end
-  -- Handle custom settings icon button click
-  if _G.settingsBtnRegion then
-    local r = _G.settingsBtnRegion
-    if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
-      if not _G.showSettingsModal then
-        _G.showSettingsModal = true
-        platform.window:invalidate()
+  -- Close help modal and block background clicks
+  if _G.showHelpModal then
+      local r = _G.helpModalCloseBtnRegion
+      if r and x>=r.x and x<=r.x+r.w and y>=r.y and y<=r.y+r.h then
+          _G.showHelpModal = false
+          platform.window:invalidate()
       end
       return
-    end
+  end
+  -- Startup Hint modal block
+  if _G.showStartupHint then
+      local r = _G.hintDismissBtnRegion
+      if r and x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+          _G.showStartupHint = false
+          platform.window:invalidate()
+          return
+      end
+      if _G.startupDontShowBtn then
+          local btnX = (scrWidth - 240) / 2 + 10
+          local btnY = scrHeight - 90 - 80 + 90 - 22 - 10
+          if x >= btnX and x <= btnX + 110 and y >= btnY and y <= btnY + 22 then
+              _G.startupDontShowBtn:onMouseDown()
+              platform.window:invalidate()
+              return
+          end
+      end
   end
   -- Modal ETK Button mouseDown
   if _G.showSettingsModal and _G.modalETKButton then
@@ -1510,70 +1719,98 @@ function on.mouseDown(x, y)
 end
 
 function on.mouseUp(x, y)
-  -- Consistent modal button hitboxes using visible regions
-  if _G.showSettingsModal then
-    local modalW, modalH = 200, 200
-    local modalX = (scrWidth - modalW) / 2
-    local modalY = (scrHeight - modalH) / 2
-    local labelX = modalX + 10
-    local labelY = modalY + 40
-    local lineHeight = 28
-    local btnW, btnH = 48, 22
+    -- Consistent modal button hitboxes using visible regions
+    if _G.showSettingsModal then
+        local modalW, modalH = 200, 200
+        local modalX = (scrWidth - modalW) / 2
+        local modalY = (scrHeight - modalH) / 2
+        local labelX = modalX + 10
+        local labelY = modalY + 40
+        local lineHeight = 28
+        local btnW, btnH = 48, 22
 
-    -- Decimals Button
-    local decBtnX = labelX + getStringWidth("Decimals:") + 10
-    local decBtnY = labelY - 2
-    if x >= decBtnX and x <= decBtnX + btnW and y >= decBtnY and y <= decBtnY + btnH then
-      _G.modalETKButton:onMouseUp(x - decBtnX, y - decBtnY, true)
-      platform.window:invalidate()
-      return
-    end
+        -- Decimals Button
+        local decBtnX = labelX + getStringWidth("Decimals:") + 10
+        local decBtnY = labelY - 2
+        if x >= decBtnX and x <= decBtnX + btnW and y >= decBtnY and y <= decBtnY + btnH then
+            _G.modalETKButton:onMouseUp(x - decBtnX, y - decBtnY, true)
+            platform.window:invalidate()
+            return
+        end
+        -- Complex Mode Button
+        local complexLabelY = labelY + lineHeight + 85
+        local complexBtnX = labelX + getStringWidth("Complex:") + 10
+        local complexBtnY = complexLabelY - 2
+        if x >= complexBtnX and x <= complexBtnX + btnW and y >= complexBtnY and y <= complexBtnY + btnH then
+            _G.complexModeToggleBtn:onMouseUp(x - complexBtnX, y - complexBtnY, true)
+            platform.window:invalidate()
+            return
+        end
 
-    -- Constants Button
-    local consLabelY = labelY + lineHeight
-    local consBtnX = labelX + getStringWidth("Constants:") + 10
-    local consBtnY = consLabelY - 2
-    if x >= consBtnX and x <= consBtnX + btnW and y >= consBtnY and y <= consBtnY + btnH then
-      _G.constantsToggleBtn:onMouseUp(x - consBtnX, y - consBtnY, true)
-      platform.window:invalidate()
-      return
-    end
+        -- Precision Button - ensure button exists before checking hitbox
+        -- INJECT: create _G.precisionBtn if not exists, before hitbox check
+        if not _G.precisionBtn then
+            _G.precisionBtn = Widgets.Button{
+                text = tostring(var.recall("nLuaCAS_precision_pref") or 4),
+                position = Dimension(24, 14),
+                parent = theView,
+                onAction = function(self)
+                    local cur = var.recall("nLuaCAS_precision_pref") or 4
+                    cur = cur + 1
+                    if cur > 9 then cur = 4 end
+                    var.store("nLuaCAS_precision_pref", cur)
+                    self.text = tostring(cur)
+                    platform.window:invalidate()
+                end
+            }
+        end
+        -- Precision Button
+        local precLabelY = labelY + 2 * lineHeight
+        local precBtnX = labelX + getStringWidth("Precision:") + 10
+        local precBtnY = precLabelY - 2
+        local precBtnW = 24
+        local precBtnH = btnH - 8
+        if x >= precBtnX and x <= precBtnX + precBtnW and y >= precBtnY and y <= precBtnY + precBtnH then
+            _G.precisionBtn:onMouseUp(x - precBtnX, y - precBtnY, true)
+            platform.window:invalidate()
+            return
+        end
 
-    -- Dark Mode Button
-    local darkLabelY = consLabelY + lineHeight
-    local darkBtnX = labelX + getStringWidth("Dark Mode:") + 10
-    local darkBtnY = darkLabelY - 2
-    if x >= darkBtnX and x <= darkBtnX + btnW and y >= darkBtnY and y <= darkBtnY + btnH then
-      _G.darkModeToggleBtn:onMouseUp(x - darkBtnX, y - darkBtnY, true)
-      platform.window:invalidate()
-      return
-    end
+        -- Constants Button
+        local consLabelY = labelY + lineHeight
+        local consBtnX = labelX + getStringWidth("Constants:") + 10
+        local consBtnY = consLabelY - 2
+        if x >= consBtnX and x <= consBtnX + btnW and y >= consBtnY and y <= consBtnY + btnH then
+            _G.constantsToggleBtn:onMouseUp(x - consBtnX, y - consBtnY, true)
+            platform.window:invalidate()
+            return
+        end
 
-    -- Category Button
-    local catLabelY = darkLabelY + lineHeight
-    local catBtnX = labelX + getStringWidth("Category:") + 10
-    local catBtnY = catLabelY - 2
-    if x >= catBtnX and x <= catBtnX + 90 and y >= catBtnY and y <= catBtnY + btnH then
-      _G.categoryBtn:onMouseUp(x - catBtnX, y - catBtnY, true)
-      platform.window:invalidate()
-      return
-    end
+        -- Category Button
+        local catLabelY = consLabelY + 2 * lineHeight
+        local catBtnX = labelX + getStringWidth("Category:") + 10
+        local catBtnY = catLabelY - 2
+        if x >= catBtnX and x <= catBtnX + 90 and y >= catBtnY and y <= catBtnY + btnH then
+            _G.categoryBtn:onMouseUp(x - catBtnX, y - catBtnY, true)
+            platform.window:invalidate()
+            return
+        end
 
-    -- Constants List Toggles
-    local listY = catLabelY + lineHeight
-    local avail = var.recall("available_constants") or {}
-    local clist = get_constants_by_category(_G.currentConstCategory)
-    for i, name in ipairs(clist) do
-      local cy = listY + (i - 1) * 15
-      if y >= cy and y <= cy + 15 and x >= labelX and x <= labelX + 200 then
-        avail[name] = not (avail[name] == true)
-        var.store("available_constants", avail)
-        platform.window:invalidate()
-        return
-      end
+        -- Constants List Toggles
+        local listY = catLabelY + lineHeight
+        local avail = var.recall("available_constants") or {}
+        local clist = get_constants_by_category(_G.currentConstCategory)
+        for i, name in ipairs(clist) do
+            local cy = listY + (i - 1) * 15
+            if y >= cy and y <= cy + 15 and x >= labelX and x <= labelX + 200 then
+                avail[name] = not (avail[name] == true)
+                var.store("available_constants", avail)
+                platform.window:invalidate()
+                return
+            end
+        end
     end
-  end
-  if theView then theView:onMouseUp(x, y) end
+    if theView then theView:onMouseUp(x, y) end
 end
 
 function initFontGC(gc)
@@ -1791,14 +2028,15 @@ function initGUI()
     if scrWidth > 0 and scrHeight > 0 then
         theView = View(platform.window)
 
-        -- Vertical scroll bar for history
+        -- Vertical scroll bar for history (because scrolling is still a thing)
         sbv = VScrollBar(theView, 0, -1, 5, scrHeight + 1)
         sbv:setHConstraints("right", 0)
         theView:add(sbv)
 
-        -- Input editor at bottom (MathEditor)
+        -- Input editor at bottom (MathEditor) - the star of the show
         fctEditor = MathEditor(theView, 2, border, scrWidth - 4 - sbv.w, 30, "")
-        -- Safely set editor colors if method exists (using consistent logic from applyEditorColors)
+        
+        -- Apply dark/light mode colors because apparently consistency matters
         if fctEditor and fctEditor.editor then
             local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
             if fctEditor.editor.setBackgroundColor then
@@ -1813,6 +2051,7 @@ function initGUI()
                 fctEditor.editor:setBorderColor(table.unpack(border))
             end
         end
+        
         fctEditor:setHConstraints("justify", 1)
         fctEditor:setVConstraints("bottom", 1)
         fctEditor.editor:setSizeChangeListener(function(editor, w, h)
@@ -1823,20 +2062,93 @@ function initGUI()
         fctEditor.editor:setText("")
         fctEditor:fixContent()
 
-        -- First-focus is input editor
+        -- First-focus is input editor (as it should be)
         theView:setFocus(fctEditor)
 
-        -- Sync category state and update button after GUI is ready (not in launch animation)
+        -- Sync category state and update button after GUI is ready
         syncCategoryFromStorage()
         if _G.categoryBtn then
             _G.categoryBtn.text = _G.currentConstCategory
         end
+        
         inited = true
     end
 
     toolpalette.enableCopy(true)
     toolpalette.enablePaste(true)
 end
+
+
+
+
+
+function on.contextMenu()
+    if not theView then return true end
+    -- clear any existing menus
+    if _G.menuStack then
+        for _, m in ipairs(_G.menuStack) do theView:remove(m) end
+    end
+    _G.menuStack = {}
+
+    local menuX, menuY, menuWidth = 6, 38, 120
+
+    local submenuMap = {
+        Calculus = {"Differentiate", "Integrate", "Factorial", "Series", "Abs", "Empty Matrix"},
+        Solve    = {"Solve Equation"},
+        Series   = {"Taylor Series", "Fourier Series", "Maclaurin Series"},
+    }
+
+    local actionMap = {
+        Differentiate     = "d/dx()",
+        Integrate         = "∫(,)",
+        Abs               = "abs()",
+        ["Empty Matrix"]  = "[[,],[,]]",
+        ["Factorial"]     = "factorial(",
+        ["Taylor Series"]    = "series(f,x,a,n)",
+        ["Fourier Series"]   = "series(f,x,a,n)",
+        ["Maclaurin Series"] = "series(f,x,0,n)",
+        ["Solve Equation"]   = "solve(",
+    }
+
+    local function pushMenu(items)
+        local depth = #_G.menuStack
+        local x = menuX + depth * menuWidth
+        if depth > 0 then _G.menuStack[depth].muted = true end
+
+        local m = MenuWidget(theView, x, menuY, items, function(idx, text)
+            if submenuMap[text] then
+                pushMenu(submenuMap[text])
+            elseif actionMap[text] then
+                theView:setFocus(fctEditor)
+                fctEditor:addString(actionMap[text])
+                for _, mm in ipairs(_G.menuStack) do theView:remove(mm) end
+                _G.menuStack = nil
+                theView:invalidate()
+            elseif text == "Settings" then
+                _G.showSettingsModal = true
+                platform.window:invalidate()
+                for _, mm in ipairs(_G.menuStack) do theView:remove(mm) end
+                _G.menuStack = nil
+            elseif text == "Help" then
+                _G.showHelpModal = true
+                platform.window:invalidate()
+                for _, m in ipairs(_G.menuStack) do theView:remove(m) end
+                _G.menuStack = nil
+            end
+        end)
+
+        m.level = depth + 1
+        m.submenus = submenuMap
+        m.muted    = false
+        table.insert(_G.menuStack, m)
+        theView:add(m); theView:setFocus(m); theView:invalidate()
+    end
+
+    -- root menu
+    pushMenu({"Calculus", "Solve", "Settings", "Help"})
+    return true
+end
+
 
 function resizeGC(gc)
 	scrWidth = platform.window:width()
@@ -1884,56 +2196,70 @@ function on.paint(gc)
         gc:fillRect(0, 0, scrWidth, scrHeight)
 
         -- Ensure assets exist
-        if n_logo and luacas_text then
+        -- This block should be inside your on.timer() function or wherever the animation rendering happens
+if showLaunchAnim then -- Add this conditional check here
+    if n_logo and luacas_text then
 
-            -- Animate n_logo: from off-screen right to x = 50
-            local logoStartX = scrWidth + 100
-            local logoEndX = 20
-            if dt < 1000 then
-                logoX = logoStartX - (dt / 1000) * (logoStartX - logoEndX)
-            else
-                logoX = logoEndX
-            end
+        local dt = timer.getMilliSecCounter() - launchStartTime -- Make sure dt is defined if not already
 
-            -- Animate luacas_text: from off-screen right to x = close to n_logo, starts after n_logo
-            local textStartX = scrWidth + 300
-            -- Use the same scale factors as globals for animation
-            local logoWidth, logoHeight = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
-            local textWidth, textHeight = image.width(luacas_text) * scaleFactorText, image.height(luacas_text) * scaleFactorText
-            local textEndX = logoEndX + logoWidth + 30
-            if dt >= 1000 and dt < 2000 then
-                local textDt = dt - 1000
-                textX = textStartX - (textDt / 1000) * (textStartX - textEndX)
-            elseif dt >= 2000 then
-                textX = textEndX
-            end
-
-            -- Draw images if within their time windows, scale logo and text to match global scaling
-            local baseY = 100
-            local baseYText = 77
-
-            if dt >= 0 then
-                gc:drawImage(n_logo, logoX, baseY, logoWidth, logoHeight)
-            end
-            if dt >= 100 then
-                gc:drawImage(luacas_text, textX, baseYText, textWidth, textHeight)
-            end
-
-            -- End animation after both complete
-            if dt >= 2500 then
-                showLaunchAnim = false
-                -- Restore D2Editor visibility after animation ends
-                if fctEditor and fctEditor.editor then
-                    fctEditor.editor:setVisible(true)
-                end
-                timer.stop(tick)
-                platform.window:invalidate()
-            end
+        -- Animate n_logo: from off-screen right to x = 50
+        local logoStartX = scrWidth + 100 -- Ensure scrWidth is accessible or defined
+        local logoEndX = 20
+        if dt < 1000 then
+            logoX = logoStartX - (dt / 1000) * (logoStartX - logoEndX)
+        else
+            logoX = logoEndX
         end
 
-        -- Remove invalidate from here; handled by timer for smooth animation
-        return
+        -- Animate luacas_text: from off-screen right to x = close to n_logo, starts after n_logo
+        local textStartX = scrWidth + 300
+        -- Use the same scale factors as globals for animation
+        local logoWidth, logoHeight = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
+        local textWidth, textHeight = image.width(luacas_text) * scaleFactorText, image.height(luacas_text) * scaleFactorText
+        local textEndX = logoEndX + logoWidth + 30
+        if dt >= 1000 and dt < 2000 then
+            local textDt = dt - 1000
+            textX = textStartX - (textDt / 1000) * (textStartX - textEndX)
+        elseif dt >= 2000 then
+            textX = textEndX
+        end
+
+        -- Draw images if within their time windows, scale logo and text to match global scaling
+        local baseY = 100
+        local baseYText = 77
+
+        if dt >= 0 then
+            gc:drawImage(n_logo, logoX, baseY, logoWidth, logoHeight)
+        end
+        if dt >= 100 then
+            gc:drawImage(luacas_text, textX, baseYText, textWidth, textHeight)
+        end
+
+        -- End animation after both complete
+        if dt >= 2500 then
+            showLaunchAnim = false -- This will effectively stop the animation for subsequent frames
+            -- Restore D2Editor visibility after animation ends
+            if fctEditor and fctEditor.editor then
+                fctEditor.editor:setVisible(true)
+            end
+            timer.stop(tick) -- Assuming 'tick' is the timer ID
+            platform.window:invalidate()
+        end
     end
+
+    -- Remove invalidate from here; handled by timer for smooth animation
+    return
+else -- If showLaunchAnim is false, just immediately set it to false and stop the timer
+    showLaunchAnim = false -- Ensure it's false to prevent future animation attempts
+    timer.stop(tick) -- Stop the animation timer immediately if it's not meant to run
+    -- Restore D2Editor visibility immediately
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(true)
+    end
+    platform.window:invalidate() -- Force a redraw if needed
+    return -- Exit the on.timer function
+end
+end
 
     if not inited then
         initGUI()
@@ -1971,32 +2297,7 @@ function on.paint(gc)
             gc:drawString(outputStr, 10, scrHeight - 25, "top")
         end
         -- Draw custom settings icon button at top right if modal not open
-        if not _G.showSettingsModal then
-            local btnSize = 24
-            local btnX = scrWidth - btnSize - 8
-            local btnY = 8
-            _G.settingsBtnRegion = {x = btnX, y = btnY, w = btnSize, h = btnSize}
-
-            -- Button background, border, and icon color respecting dark mode
-            local bg = _G.darkMode and {50, 50, 50} or {255, 255, 255}
-            local border = _G.darkMode and {150, 150, 150} or {94, 103, 111}
-            local iconColor = _G.darkMode and {220, 220, 220} or {0, 0, 0}
-
-            gc:setColorRGB(table.unpack(bg))
-            gc:fillRect(btnX, btnY, btnSize, btnSize)
-            gc:setColorRGB(table.unpack(border))
-            gc:drawRect(btnX, btnY, btnSize, btnSize)
-
-            -- Centered symbol (π for settings)
-            local symbol = "π"   -- Change to "." or "⋅" or "⚙" for different icons
-            gc:setFont("sansserif", "b", 16)
-            local textW = gc:getStringWidth(symbol)
-            local textH = gc:getStringHeight(symbol)
-            local centerX = btnX + (btnSize - textW) / 2
-            local centerY = btnY + (btnSize - textH) / 2
-            gc:setColorRGB(table.unpack(iconColor))
-            gc:drawString(symbol, centerX, centerY, "top")
-        end
+        -- (π icon drawing block removed)
         theView:paint(gc)
 
         -- Draw the bottom input area background fully respecting dark mode (after theView:paint)
@@ -2088,6 +2389,37 @@ function on.paint(gc)
         end
         _G.modalETKButton.text = (_G.autoDecimal and "ON" or "OFF")
         _G.modalETKButton:draw(gc, btnX, btnY, btnW, btnH)
+        -- Complex Mode Toggle
+        local complexLabelY = labelY + lineHeight + 85
+        local complexBtnX = labelX + gc:getStringWidth("Complex:") + 10
+        local complexBtnY = complexLabelY - 2
+
+        gc:drawString("Complex:", labelX, complexLabelY, "top")
+
+        if not _G.complexModeToggleBtn then
+            _G.complexModeToggleBtn = Widgets.Button{
+                text = (_G.showComplex and "ON" or "OFF"),
+                position = Dimension(btnW, btnH),
+                parent = theView,
+                onAction = function(self)
+                    _G.showComplex = not _G.showComplex
+                    var.store("nLuaCAS_complex_pref", _G.showComplex and 1 or 0)
+                    platform.window:invalidate()
+                end
+            }
+        end
+        _G.complexModeToggleBtn.text = (_G.showComplex and "ON" or "OFF")
+        _G.complexModeToggleBtn:draw(gc, complexBtnX, complexBtnY, btnW, btnH)
+
+        -- Precision Input Field (1-digit wide)
+        local precLabelY = labelY + 2 * lineHeight
+        local precFieldX = labelX + gc:getStringWidth("Precision:") + 10
+        local precFieldY = precLabelY - 2
+        local precFieldW = 16
+        local precFieldH = btnH - 8
+        gc:drawString("Precision:", labelX, precLabelY, "top")
+        gc:drawRect(precFieldX, precFieldY, precFieldW, precFieldH)
+        gc:drawString(tostring(var.recall("nLuaCAS_precision_pref") or ""), precFieldX + 3, precFieldY + 1, "top")
 
         -- Constants Toggle
         local consLabelY = labelY + lineHeight
@@ -2110,31 +2442,9 @@ function on.paint(gc)
         _G.constantsToggleBtn.text = (not var.recall("constants_off") and "ON" or "OFF")
         _G.constantsToggleBtn:draw(gc, consBtnX, consBtnY, btnW, btnH)
 
-        -- Dark Mode Toggle
-        local darkLabelY = consLabelY + lineHeight
-        gc:drawString("Dark Mode:", labelX, darkLabelY, "top")
-        local darkBtnX = btnX
-        local darkBtnY = darkLabelY - 2
-        if not _G.darkModeToggleBtn then
-            _G.darkModeToggleBtn = Widgets.Button{
-                text = (_G.darkMode and "ON" or "OFF"),
-                position = Dimension(btnW, btnH),
-                parent = theView,
-                onAction = function(self)
-                    _G.darkMode = not _G.darkMode
-                    var.store("dark_mode", _G.darkMode and 1 or 0)
-                    applyEditorColors()
-                    platform.window:setBackgroundColor(_G.darkMode and 0x1E1E1E or 0xFFFFFF)
-                    applyEditorColors()
-                    platform.window:invalidate()
-                end
-            }
-        end
-        _G.darkModeToggleBtn.text = (_G.darkMode and "ON" or "OFF")
-        _G.darkModeToggleBtn:draw(gc, darkBtnX, darkBtnY, btnW, btnH)
 
         -- Category Selector
-        local catLabelY = darkLabelY + lineHeight
+        local catLabelY = consLabelY + 2 * lineHeight
         gc:drawString("Category:", labelX, catLabelY, "top")
         local catBtnX = btnX
         local catBtnY = catLabelY - 2
@@ -2182,11 +2492,89 @@ function on.paint(gc)
             gc:drawString((enabled and "[✓] " or "[ ] ") .. name, labelX, cy, "top")
         end
     end
+
+    -- Help modal overlay
+    if _G.showHelpModal then
+        local w,h = 300,200
+        local x0,y0 = (scrWidth-w)/2, (scrHeight-h)/2
+        local bg = _G.darkMode and {30,30,30} or {240,240,240}
+        local bd = _G.darkMode and {200,200,200} or {0,0,0}
+        local tc = _G.darkMode and {220,220,220} or {0,0,0}
+        gc:setColorRGB(unpackColor(bg)); gc:fillRect(x0,y0,w,h)
+        gc:setColorRGB(unpackColor(bd)); gc:drawRect(x0,y0,w,h)
+        gc:setColorRGB(unpackColor(tc)); gc:setFont("sansserif","b",14)
+        gc:drawString("CAS Help", x0+10, y0+10, "top")
+        -- Close button
+        local cs=24; local cx,cy = x0+w-cs-6, y0+6
+        _G.helpModalCloseBtnRegion={x=cx,y=cy,w=cs,h=cs}
+        gc:setColorRGB(200,40,40); gc:fillRect(cx,cy,cs,cs)
+        gc:setColorRGB(255,255,255); gc:setFont("sansserif","b",16)
+        local xw=gc:getStringWidth("×"); local xh=gc:getStringHeight("×")
+        gc:drawString("×", cx+(cs-xw)/2, cy+(cs-xh)/2, "top")
+        -- Help text
+        gc:setFont("sansserif","r",12)
+        local lines={
+            "Use Ctrl+MENU to open the menu.",
+            "Arrow keys or touch/click to navigate.",
+            "Select operations to insert into input.",
+            "Press Enter to compute.",
+            "Supports expand, factor, simplify,",
+            "differentiate, integrate, solve, abs,",
+            "factorial, empty matrix, series"
+        }
+        local ty=y0+40
+        for _,l in ipairs(lines) do gc:drawString(l, x0+10, ty, "top"); ty=ty+16 end
+    end
+
+    -- Startup Hint overlay
+    if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
+        local w, h = 240, 90
+        local x0 = (scrWidth - w) / 2
+        local y0 = scrHeight - h - 80
+        local bg = _G.darkMode and {40, 40, 40} or {240, 240, 240}
+        local bd = _G.darkMode and {200, 200, 200} or {0, 0, 0}
+        local tc = _G.darkMode and {220, 220, 220} or {0, 0, 0}
+        gc:setColorRGB(unpackColor(bg)); gc:fillRect(x0, y0, w, h)
+        gc:setColorRGB(unpackColor(bd)); gc:drawRect(x0, y0, w, h)
+        gc:setColorRGB(unpackColor(tc)); gc:setFont("sansserif", "b", 12)
+        gc:drawString("Tip: Press Ctrl+MENU", x0 + 10, y0 + 10, "top")
+        gc:drawString("to open the menu.", x0 + 10, y0 + 26, "top")
+
+        local btnW, btnH = 70, 22
+        local btnX = x0 + w - btnW - 10
+        local btnY = y0 + h - btnH - 10
+        _G.hintDismissBtnRegion = { x = btnX, y = btnY, w = btnW, h = btnH }
+
+        gc:setColorRGB(200, 40, 40)
+        gc:fillRect(btnX, btnY, btnW, btnH)
+        gc:setColorRGB(255, 255, 255)
+        gc:setFont("sansserif", "b", 12)
+        local tw = gc:getStringWidth("Dismiss")
+        local th = gc:getStringHeight("Dismiss")
+        gc:drawString("Dismiss", btnX + (btnW - tw) / 2, btnY + (btnH - th) / 2, "top")
+
+        -- ETK-style "Don't show again" button using Widgets.Button
+        if not _G.startupDontShowBtn then
+            _G.startupDontShowBtn = Widgets.Button{
+                text = "Don't show again",
+                position = Dimension(110, btnH),
+                parent = theView,
+                onAction = function(self)
+                    if var and var.store then
+                        var.store("hide_startup_hint", 1)
+                    end
+                    _G.showStartupHint = false
+                    platform.window:invalidate()
+                end
+            }
+        end
+        _G.startupDontShowBtn:draw(gc, x0 + 10, btnY, 110, btnH)
+    end
 end
 
 font = "sansserif"
 style = "r"
-fsize = 9
+fsize = 12
 
 scrWidth = 0
 scrHeight = 0

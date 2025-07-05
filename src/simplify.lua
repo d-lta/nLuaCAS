@@ -1,4 +1,20 @@
 local simplify = {}
+
+
+
+-- Helper: get precision from flag or default
+local function get_precision()
+    
+    -- local prec = var and var.recall and var.recall("nLuaCAS_precision_pref")
+    -- if type(prec) == "number" and prec >= 0 then return prec end
+    return nil 
+end
+
+-- Helper: round to precision
+local function round_to_precision(val, precision)
+    local mult = 10 ^ (precision or 4)
+    return math.floor(val * mult + 0.5) / mult
+end
 local ast = rawget(_G, "ast") or require("ast")
 local parser = rawget(_G, "parser") or require("parser")
 
@@ -22,6 +38,118 @@ local function deepcopy(t)
     local c = {}
     for k,v in pairs(t) do c[k] = deepcopy(v) end
     return c
+end
+
+-- ===== TENSOR MULTIPLICATION HELPER =====
+local function tensor_multiply(t1, t2)
+    if not (t1 and t1.type == "tensor" and t2 and t2.type == "tensor") then
+        return nil
+    end
+
+    local function is_vector(t)
+        for _, e in ipairs(t.elements) do
+            if e.type == "tensor" then return false end
+        end
+        return true
+    end
+
+    local function is_matrix(t)
+        for _, row in ipairs(t.elements) do
+            if row.type ~= "tensor" then return false end
+        end
+        return true
+    end
+
+    if is_vector(t1) and is_vector(t2) then
+        -- Dot product
+        local sum = 0
+        for i=1, math.min(#t1.elements, #t2.elements) do
+            local e1, e2 = t1.elements[i], t2.elements[i]
+            if e1.type == "number" and e2.type == "number" then
+                sum = sum + e1.value * e2.value
+            else
+                return nil -- Non-numeric elements, bail
+            end
+        end
+        return { type = "number", value = sum }
+    elseif is_matrix(t1) and is_matrix(t2) then
+        -- Matrix multiplication: (m x n) * (n x p)
+        local m = #t1.elements
+        local n = #t1.elements[1].elements
+        local n2 = #t2.elements
+        local p = #t2.elements[1].elements
+        if n ~= n2 then return nil end
+
+        local result = {}
+        for i=1,m do
+            local row = {}
+            for j=1,p do
+                local sum = 0
+                for k=1,n do
+                    local a = t1.elements[i].elements[k]
+                    local b = t2.elements[k].elements[j]
+                    if a.type == "number" and b.type == "number" then
+                        sum = sum + a.value * b.value
+                    else
+                        return nil
+                    end
+                end
+                table.insert(row, { type = "number", value = sum })
+            end
+            table.insert(result, { type = "tensor", elements = row })
+        end
+        return { type = "tensor", elements = result }
+    elseif is_matrix(t1) and is_vector(t2) then
+        -- Matrix * vector
+        local m = #t1.elements
+        local n = #t1.elements[1].elements
+        local len = #t2.elements
+        if n ~= len then return nil end
+
+        local result = {}
+        for i=1,m do
+            local sum = 0
+            for j=1,n do
+                local a = t1.elements[i].elements[j]
+                local b = t2.elements[j]
+                if a.type == "number" and b.type == "number" then
+                    sum = sum + a.value * b.value
+                else
+                    return nil
+                end
+            end
+            table.insert(result, { type = "number", value = sum })
+        end
+        return { type = "tensor", elements = result }
+    else
+        return nil -- Unsupported tensor shapes
+    end
+end
+
+-- Helper: pretty print AST nodes for debugging (recursive)
+local function ast_to_string(node, visited, depth)
+    visited = visited or {}
+    depth = depth or 0
+    local indent = string.rep("  ", depth)
+    if type(node) ~= "table" then
+        return tostring(node)
+    end
+    if visited[node] then
+        return indent .. "<cycle>"
+    end
+    visited[node] = true
+    local parts = {}
+    table.insert(parts, indent .. "{")
+    for k, v in pairs(node) do
+        local keystr = tostring(k)
+        if type(v) == "table" then
+            table.insert(parts, indent .. "  " .. keystr .. " = " .. ast_to_string(v, visited, depth + 1))
+        else
+            table.insert(parts, indent .. "  " .. keystr .. " = " .. tostring(v))
+        end
+    end
+    table.insert(parts, indent .. "}")
+    return table.concat(parts, "\n")
 end
 
 -- Simple hash for expression comparison
@@ -130,98 +258,326 @@ end
 
 -- ===== STEP 3: CONSTANT FOLDING (The Easy Wins) =====
 
+-- fold_constants: The Elegant Edition
+-- Because your original was apparently written by someone who thinks math is optional
+
 local function fold_constants(expr)
-    if is_num(expr) then return expr end
-    
-    if is_add(expr) and expr.args then
-        local sum = 0
-        local non_numbers = {}
-        
-        for _, arg in ipairs(expr.args) do
-            if is_num(arg) then
-                sum = sum + arg.value
+    if not expr or type(expr) ~= "table" then return expr end
+    if expr.type == "<unknown>" then return expr end
+
+    -- Helper: create a number node (because apparently this needs to be a function)
+    local function make_num(val)
+        return { type = "number", value = val }
+    end
+
+    -- Helper: round number to current precision if needed
+    local function round_number_if_needed(expr)
+        if expr and expr.type == "number" then
+            local p = get_precision()
+            if p and p >= 0 then
+                return { type = "number", value = round_to_precision(expr.value, p) }
+            end
+        end
+        return expr
+    end
+
+    -- Helper: extract numeric value from node, handling negation gracefully
+    local function extract_numeric_value(node)
+        if node.type == "number" then
+            return node.value, true
+        elseif node.type == "neg" then
+            local inner = node.arg or node.value
+            if inner and inner.type == "number" then
+                return -inner.value, true
+            end
+        end
+        return nil, false
+    end
+
+    -- Handle addition: collect numbers, preserve everything else
+    if expr.type == "add" and expr.args then
+        local numeric_sum = 0
+        local non_numeric_terms = {}
+        local found_numbers = false
+
+        for _, term in ipairs(expr.args) do
+            local folded_term = fold_constants(term)
+            local numeric_val, is_numeric = extract_numeric_value(folded_term)
+            
+            if is_numeric then
+                numeric_sum = numeric_sum + numeric_val
+                found_numbers = true
             else
-                table.insert(non_numbers, arg)
+                table.insert(non_numeric_terms, folded_term)
             end
         end
-        
-        local result_args = {}
-        if sum ~= 0 then
-            table.insert(result_args, num(sum))
-        end
-        for _, arg in ipairs(non_numbers) do
-            table.insert(result_args, arg)
-        end
-        
-        if #result_args == 0 then return num(0) end
-        if #result_args == 1 then return result_args[1] end
-        return {type = "add", args = result_args}
-    end
-    
-    if is_mul(expr) and expr.args then
-        local product = 1
-        local non_numbers = {}
 
-        for _, arg in ipairs(expr.args) do
-            if is_num(arg) then
-                product = product * arg.value
+        -- Assemble the result with mathematical dignity
+        local result_terms = {}
+        if found_numbers and numeric_sum ~= 0 then
+            table.insert(result_terms, make_num(numeric_sum))
+        end
+        for _, term in ipairs(non_numeric_terms) do
+            table.insert(result_terms, term)
+        end
+
+        -- Return the most elegant representation
+        if #result_terms == 0 then return round_number_if_needed(make_num(0)) end
+        if #result_terms == 1 then return round_number_if_needed(result_terms[1]) end
+        return { type = "add", args = result_terms }
+    end
+
+    -- Handle multiplication: the source of your discriminant trauma
+    if expr.type == "mul" and expr.args then
+        local numeric_product = 1
+        local non_numeric_factors = {}
+        local found_numbers = false
+
+        for _, factor in ipairs(expr.args) do
+            local folded_factor = fold_constants(factor)
+            local numeric_val, is_numeric = extract_numeric_value(folded_factor)
+            
+            if is_numeric then
+                numeric_product = numeric_product * numeric_val
+                found_numbers = true
             else
-                table.insert(non_numbers, arg)
+                table.insert(non_numeric_factors, folded_factor)
             end
         end
 
-        -- Zero kills everything
-        if product == 0 then return num(0) end
-
-        -- Remove any numeric factor 1 from non_numbers, unless it is the only factor
-        local filtered_non_numbers = {}
-        for _, arg in ipairs(non_numbers) do
-            if not (is_num(arg) and arg.value == 1 and #non_numbers > 1) then
-                table.insert(filtered_non_numbers, arg)
+        -- PATCH: Distribute numeric factors over negations
+        local patched_factors = {}
+        for _, factor in ipairs(non_numeric_factors) do
+            if factor.type == "neg" and factor.arg then
+                -- Distribute all previous numeric_product into the negation
+                table.insert(patched_factors, {type = "mul", args = {{type="number", value = -1 * numeric_product}, fold_constants(factor.arg)}})
+                numeric_product = 1
+                found_numbers = false
+            else
+                table.insert(patched_factors, factor)
             end
         end
-        non_numbers = filtered_non_numbers
+        non_numeric_factors = patched_factors
 
-        local result_args = {}
-        -- Only include the 1 if there are no non-numeric factors
-        if product ~= 1 or #non_numbers == 0 then
-            table.insert(result_args, num(product))
+        -- Handle the mathematical realities
+        if numeric_product == 0 then return round_number_if_needed(make_num(0)) end
+
+        -- Assemble result with appropriate elegance
+        local result_factors = {}
+        if found_numbers and (numeric_product ~= 1 or #non_numeric_factors == 0) then
+            table.insert(result_factors, make_num(numeric_product))
         end
-        for _, arg in ipairs(non_numbers) do
-            table.insert(result_args, arg)
+        for _, factor in ipairs(non_numeric_factors) do
+            table.insert(result_factors, factor)
         end
 
-        if #result_args == 0 then return num(1) end
-        if #result_args == 1 then return result_args[1] end
-        return {type = "mul", args = result_args}
-    end
-    
-    if is_pow(expr) then
-        if is_num(expr.base) and is_num(expr.exp) then
-            return num(expr.base.value ^ expr.exp.value)
-        end
+        if #result_factors == 0 then return round_number_if_needed(make_num(1)) end
+        if #result_factors == 1 then return round_number_if_needed(result_factors[1]) end
+        return { type = "mul", args = result_factors }
     end
 
-    -- Gamma function constant folding using _G.evaluateGamma if available
-    if expr.type == "func" and expr.name == "gamma" and expr.args and #expr.args == 1 then
-        local arg = expr.args[1]
-        if is_num(arg) and _G.evaluateGamma then
-            return num(_G.evaluateGamma(arg.value))
+    -- Handle subtraction: where your quadratic dreams go to die
+    if expr.type == "sub" and expr.left and expr.right then
+        local left = fold_constants(expr.left)
+        local right = fold_constants(expr.right)
+
+        -- Extract numeric values for direct computation
+        local left_val, left_is_num = extract_numeric_value(left)
+        local right_val, right_is_num = extract_numeric_value(right)
+
+        -- Handle pure numeric subtraction
+        if left_is_num and right_is_num then
+            return round_number_if_needed(make_num(left_val - right_val))
         end
+
+        -- Handle subtraction of negative: a - (-b) = a + b
+        if right.type == "neg" then
+            local right_inner = right.arg or right.value
+            return fold_constants({ type = "add", args = { left, right_inner } })
+        end
+
+        -- Handle special case: 0 - x = -x
+        if left_is_num and left_val == 0 then
+            return fold_constants({ type = "neg", arg = right })
+        end
+
+        -- Handle special case: x - 0 = x
+        if right_is_num and right_val == 0 then
+            return round_number_if_needed(left)
+        end
+
+        return { type = "sub", left = left, right = right }
     end
 
-    -- Factorial constant folding using _G.evaluateFactorial if available, else fallback to transform
-    if expr.type == "func" and expr.name == "factorial" and expr.args and #expr.args == 1 then
-        local arg = expr.args[1]
-        if is_num(arg) and _G.evaluateFactorial then
-            return num(_G.evaluateFactorial(arg.value))
+    -- Handle division: because completeness matters
+    if expr.type == "div" and expr.left and expr.right then
+        local left = fold_constants(expr.left)
+        local right = fold_constants(expr.right)
+
+        local left_val, left_is_num = extract_numeric_value(left)
+        local right_val, right_is_num = extract_numeric_value(right)
+
+        if left_is_num and right_is_num and right_val ~= 0 then
+            return round_number_if_needed(make_num(left_val / right_val))
+        end
+
+        -- x / 1 = x
+        if right_is_num and right_val == 1 then
+            return round_number_if_needed(left)
+        end
+
+        -- 0 / x = 0 (assuming x ≠ 0)
+        if left_is_num and left_val == 0 then
+            return round_number_if_needed(make_num(0))
+        end
+
+        return { type = "div", left = left, right = right }
+    end
+
+    -- Handle powers: because your quadratic formula demands it
+    if expr.type == "pow" then
+        local base = fold_constants(expr.base or expr.left)
+        local exp = fold_constants(expr.exp or expr.right)
+
+        local base_val, base_is_num = extract_numeric_value(base)
+        local exp_val, exp_is_num = extract_numeric_value(exp)
+
+        -- Simplify i^2 = -1
+        if base.type == "symbol" and base.name == "i" and exp_is_num and exp_val == 2 then
+            return round_number_if_needed(make_num(-1))
+        end
+
+        -- Handle numeric powers
+        if base_is_num and exp_is_num and not _G.showComplex then
+            -- Special cases to avoid numerical disasters
+            if base_val == 0 and exp_val > 0 then return round_number_if_needed(make_num(0)) end
+            if base_val == 0 and exp_val == 0 then return round_number_if_needed(make_num(1)) end
+            if exp_val == 0 then return round_number_if_needed(make_num(1)) end
+            if exp_val == 1 then return round_number_if_needed(base) end
+            return round_number_if_needed(make_num(base_val ^ exp_val))
+        end
+
+        -- x^0 = 1
+        if exp_is_num and exp_val == 0 then
+            return round_number_if_needed(make_num(1))
+        end
+
+        -- x^1 = x
+        if exp_is_num and exp_val == 1 then
+            return round_number_if_needed(base)
+        end
+
+        -- 0^x = 0 (for positive x)
+        if base_is_num and base_val == 0 then
+            return round_number_if_needed(make_num(0))
+        end
+
+        -- 1^x = 1
+        if base_is_num and base_val == 1 then
+            return round_number_if_needed(make_num(1))
+        end
+
+        return { type = "pow", base = base, exp = exp }
+    end
+
+    -- Handle negation: with proper respect for double negatives
+    if expr.type == "neg" then
+        local inner = fold_constants(expr.arg or expr.value)
+        local inner_val, inner_is_num = extract_numeric_value(inner)
+
+        if inner_is_num then
+            return round_number_if_needed(make_num(-inner_val))
+        end
+
+        -- Handle double negation: -(-x) = x
+        if inner.type == "neg" then
+            return fold_constants(inner.arg or inner.value)
+        end
+
+        return { type = "neg", arg = inner }
+    end
+
+    -- Handle functions: sqrt, sin, cos, etc.
+    if expr.type == "func" and expr.args then
+        local folded_args = {}
+        local all_numeric = true
+        
+        for i, arg in ipairs(expr.args) do
+            folded_args[i] = fold_constants(arg)
+            if not extract_numeric_value(folded_args[i]) then
+                all_numeric = false
+            end
+        end
+
+        -- Handle sqrt of numeric values, including sqrt(-1) = i
+        if expr.name == "sqrt" and #folded_args == 1 then
+            local val, is_num = extract_numeric_value(folded_args[1])
+            if is_num then
+                if val >= 0 and not _G.showComplex then
+                    return round_number_if_needed(make_num(math.sqrt(val)))
+                elseif val == -1 then
+                    return { type = "symbol", name = "i" }
+                end
+            end
+        end
+
+        -- Handle root(n, x) = x^(1/n)
+        if expr.name == "root" and #folded_args == 2 then
+            return {
+                type = "pow",
+                base = folded_args[2],
+                exp = { type = "div", left = make_num(1), right = folded_args[1] }
+            }
+        end
+
+        return { type = "func", name = expr.name, args = folded_args }
+    end
+
+    -- For everything else, recursively fold children
+    local result = {}
+    for k, v in pairs(expr) do
+        if type(v) == "table" and k ~= "args" then
+            result[k] = fold_constants(v)
         else
-            local transformed = _G.transformFactorial(expr)
-            return transformed
+            result[k] = v
         end
     end
-    
-    return expr
+
+    -- At the end, round number if needed
+    if result and result.type == "number" then
+        result = round_number_if_needed(result)
+    end
+    return result
+end
+
+-- Helper: recursively simplify children before folding constants
+local function fold_constants_recursive(expr)
+    if type(expr) ~= "table" then return expr end
+    -- Recursively process children
+    local new_expr = deepcopy(expr)
+    if is_num(new_expr) and new_expr.value == 0 then
+        new_expr.value = 0  -- Normalize any -0 to 0
+    end
+    if new_expr.type == "pow" then
+        new_expr.base = fold_constants_recursive(new_expr.base)
+        new_expr.exp = fold_constants_recursive(new_expr.exp)
+    elseif new_expr.type == "sin" or new_expr.type == "cos" or new_expr.type == "ln" or new_expr.type == "exp" then
+        new_expr.arg = fold_constants_recursive(new_expr.arg)
+    elseif (new_expr.type == "add" or new_expr.type == "mul") and new_expr.args then
+        for i = 1, #new_expr.args do
+            new_expr.args[i] = fold_constants_recursive(new_expr.args[i])
+        end
+    elseif new_expr.type == "func" and new_expr.args then
+        for i = 1, #new_expr.args do
+            new_expr.args[i] = fold_constants_recursive(new_expr.args[i])
+        end
+    elseif new_expr.type == "neg" and new_expr.arg then
+        new_expr.arg = fold_constants_recursive(new_expr.arg)
+    elseif new_expr.type == "sub" and new_expr.left and new_expr.right then
+        new_expr.left = fold_constants_recursive(new_expr.left)
+        new_expr.right = fold_constants_recursive(new_expr.right)
+    end
+    return fold_constants(new_expr)
 end
 
 -- ===== STEP 4: COLLECT LIKE TERMS (The Real Work) =====
@@ -260,20 +616,27 @@ end
 
 local function collect_like_terms(expr)
     if not (is_add(expr) and expr.args) then return expr end
-    
+
     local groups = {}
-    
+
     for _, term in ipairs(expr.args) do
-        local coeff, base = extract_coefficient_and_base(term)
+        local t = term
+        local sign = 1
+        if t.type == "neg" then
+            t = t.arg or t.value
+            sign = -1
+        end
+        local coeff, base = extract_coefficient_and_base(t)
+        coeff = coeff * sign
         local base_key = expr_hash(base)
-        
+
         if groups[base_key] then
             groups[base_key].coeff = groups[base_key].coeff + coeff
         else
             groups[base_key] = {coeff = coeff, base = base}
         end
     end
-    
+
     local result_terms = {}
     for _, group in pairs(groups) do
         if math.abs(group.coeff) > 1e-10 then -- Handle floating point errors
@@ -289,7 +652,7 @@ local function collect_like_terms(expr)
             end
         end
     end
-    
+
     if #result_terms == 0 then return num(0) end
     if #result_terms == 1 then return result_terms[1] end
     return {type = "add", args = result_terms}
@@ -321,10 +684,10 @@ end
 
 local function combine_powers(expr)
     if not (is_mul(expr) and expr.args) then return expr end
-    
+
     local base_groups = {}
     local other_factors = {}
-    
+
     for _, factor in ipairs(expr.args) do
         local base, exp
         if is_pow(factor) then
@@ -332,19 +695,24 @@ local function combine_powers(expr)
         else
             base, exp = factor, num(1)
         end
-        
-        local base_key = expr_hash(base)
-        if base_groups[base_key] then
-            -- Combine exponents: x^a * x^b = x^(a+b)
-            base_groups[base_key].exponents = base_groups[base_key].exponents or {}
-            table.insert(base_groups[base_key].exponents, exp)
+
+        -- Guard: Skip exponent combination for tensors
+        if base.type == "tensor" then
+            table.insert(other_factors, factor)
         else
-            base_groups[base_key] = {base = base, exponents = {exp}}
+            local base_key = expr_hash(base)
+            if base_groups[base_key] then
+                -- Combine exponents: x^a * x^b = x^(a+b)
+                base_groups[base_key].exponents = base_groups[base_key].exponents or {}
+                table.insert(base_groups[base_key].exponents, exp)
+            else
+                base_groups[base_key] = {base = base, exponents = {exp}}
+            end
         end
     end
-    
+
     local result_factors = {}
-    
+
     for _, group in pairs(base_groups) do
         if #group.exponents == 1 then
             if expr_equal(group.exponents[1], num(1)) then
@@ -357,7 +725,12 @@ local function combine_powers(expr)
             table.insert(result_factors, {type = "pow", base = group.base, exp = combined_exp})
         end
     end
-    
+
+    -- Append the other factors (e.g., tensors) that were skipped for exponent combination
+    for _, f in ipairs(other_factors) do
+        table.insert(result_factors, f)
+    end
+
     if #result_factors == 0 then return num(1) end
     if #result_factors == 1 then return result_factors[1] end
     return {type = "mul", args = result_factors}
@@ -504,23 +877,225 @@ local function ast_to_string(node, visited, depth)
     return table.concat(parts, "\n")
 end
 
+
+-- Save original simplify_step
+local old_simplify_step = simplify.simplify_step or function(expr) return expr end
+
+-- Override simplify_step to add tensor mul support
+function simplify.simplify_step(expr)
+    -- Tensor multiplication (dot/matrix product)
+    if type(expr) == "table" and expr.type == "mul" and expr.args and #expr.args == 2 then
+        local a, b = expr.args[1], expr.args[2]
+        if a.type == "tensor" and b.type == "tensor" then
+            local prod = tensor_multiply(a, b)
+            if prod then
+                if prod.type == "number" then
+                    return prod
+                end
+                -- Recursively simplify the product result
+                return simplify.simplify_step(prod)
+            end
+        end
+    end
+
+    -- Scalar-Tensor element-wise multiplication
+    if type(expr) == "table" and expr.type == "mul" and expr.args and #expr.args == 2 then
+        local a, b = expr.args[1], expr.args[2]
+        if is_num(a) and b.type == "tensor" then
+            local scaled = {}
+            for i, e in ipairs(b.elements) do
+                if e.type == "number" then
+                    scaled[i] = { type = "number", value = a.value * e.value }
+                else
+                    return expr
+                end
+            end
+            return { type = "tensor", elements = scaled }
+        elseif a.type == "tensor" and is_num(b) then
+            local scaled = {}
+            for i, e in ipairs(a.elements) do
+                if e.type == "number" then
+                    scaled[i] = { type = "number", value = e.value * b.value }
+                else
+                    return expr
+                end
+            end
+            return { type = "tensor", elements = scaled }
+        end
+    end
+
+    -- Tensor addition or subtraction (element-wise for exactly two tensors)
+    if type(expr) == "table" and expr.type == "add" and expr.args then
+        local tensors = {}
+        for _, arg in ipairs(expr.args) do
+            if arg.type == "tensor" then
+                table.insert(tensors, arg)
+            else
+                return expr -- Non-tensor terms present, skip
+            end
+        end
+        if #tensors == 2 then
+            local a, b = tensors[1], tensors[2]
+            if #a.elements ~= #b.elements then return expr end
+            local sum_elements = {}
+            for i = 1, #a.elements do
+                if a.elements[i].type == "number" and b.elements[i].type == "number" then
+                    sum_elements[i] = { type = "number", value = a.elements[i].value + b.elements[i].value }
+                else
+                    return expr
+                end
+            end
+            return { type = "tensor", elements = sum_elements }
+        elseif #tensors > 2 then
+            return expr -- Skip multi-term tensor sums for now
+        end
+    end
+
+    -- Tensor subtraction with recursive simplification
+    if type(expr) == "table" and expr.type == "sub" and expr.left and expr.right then
+        local a = simplify.simplify_step(expr.left)
+        local b = simplify.simplify_step(expr.right)
+        if a.type == "tensor" and b.type == "tensor" then
+            if #a.elements ~= #b.elements then return expr end
+            local diff_elements = {}
+            for i = 1, #a.elements do
+                if a.elements[i].type == "number" and b.elements[i].type == "number" then
+                    diff_elements[i] = { type = "number", value = a.elements[i].value - b.elements[i].value }
+                else
+                    return expr
+                end
+            end
+            return { type = "tensor", elements = diff_elements }
+        end
+    end
+
+    -- Tensor division: tensor / tensor reduces to scalar 1 if dot product nonzero
+    if type(expr) == "table" and expr.type == "mul" and expr.args and #expr.args == 2 then
+        local a, b = expr.args[1], expr.args[2]
+        if is_pow(a) and a.base.type == "tensor" and is_num(a.exp) and a.exp.value == -1 and b.type == "tensor" then
+            local prod = tensor_multiply(a.base, b)
+            if prod and prod.type == "number" then
+                if prod.value ~= 0 then
+                    return { type = "number", value = 1 }
+                else
+                    return { type = "number", value = 0 }
+                end
+            end
+        end
+    end
+
+    -- Tensor exponentiation: restrict to scalar exponents, handle positive integers
+    if type(expr) == "table" and expr.type == "pow" and expr.base and expr.exp then
+        if expr.base.type == "tensor" and is_num(expr.exp) then
+            local k = expr.exp.value
+            if k == -1 then
+                return { type = "pow", base = expr.base, exp = { type = "number", value = -1 } }
+            elseif k >= 1 and math.floor(k) == k then
+                local result = expr.base
+                for _ = 2, k do
+                    result = tensor_multiply(result, expr.base) or expr
+                end
+                return result
+            end
+        end
+    end
+
+    ----------------------------------------------------------------------
+    -- Automatic evaluation for numeric factorial
+    if type(expr) == "table" and expr.type == "func" and expr.name == "factorial" and expr.args and #expr.args == 1 then
+        local arg = simplify.simplify_step(expr.args[1])
+        if arg.type == "number" and _G.evaluateFactorial then
+            return { type = "number", value = _G.evaluateFactorial(arg.value) }
+        end
+        expr.args[1] = arg
+        return expr
+    end
+
+    -- Automatic evaluation for integral (debug-enhanced version)
+    if type(expr) == "table" and expr.type == "func" and expr.name == "int" and expr.args and #expr.args == 2 then
+        print("Simplifying integral: ", simplify.pretty_print(expr))
+
+        local inner = simplify.simplify_step(expr.args[1])
+        local respect_to = simplify.simplify_step(expr.args[2])
+
+        print("Inner after simplify: ", simplify.pretty_print(inner))
+        print("Respect to after simplify: ", simplify.pretty_print(respect_to))
+
+        if respect_to.type == "variable" and _G.integrate and _G.integrate.integrateAST then
+            print("Calling _G.integrate.integrateAST with:")
+            print("Inner: ", simplify.pretty_print(inner))
+            print("Respect to: ", respect_to.name)
+            local status, val = pcall(_G.integrate.integrateAST, inner, respect_to.name)
+            print("Integration status: ", status)
+            if status and type(val) == "table" then
+                print("Integration result: ", simplify.pretty_print(val))
+                return simplify.simplify_step(val)
+            else
+                print("Integration failed or returned non-table, val = ", val)
+            end
+        else
+            print("Skipping integral: invalid respect_to or integrateAST missing")
+        end
+
+        expr.args[1] = inner
+        expr.args[2] = respect_to
+        return expr
+    end
+    ----------------------------------------------------------------------
+
+    -- Fall back to original simplify_step
+    return old_simplify_step(expr)
+end
+
+-- Original recursive simplify_step for internal use
 local function simplify_step(expr)
     if type(expr) ~= "table" then return expr end
+    if expr.type == "<unknown>" then
+        print("Warning: encountered unknown AST node during simplification")
+        return expr
+    end
+    -- Handle tensor AST node type (recursive for arbitrary depth)
+    if expr.type == "tensor" and expr.elements then
+        local function simplify_tensor_elements(elems)
+            local simplified = {}
+            for i, elem in ipairs(elems) do
+                if type(elem) == "table" and elem.type == "tensor" and elem.elements then
+                    simplified[i] = { type = "tensor", elements = simplify_tensor_elements(elem.elements) }
+                else
+                    simplified[i] = simplify_step(elem)
+                end
+            end
+            return simplified
+        end
+        return { type = "tensor", elements = simplify_tensor_elements(expr.elements) }
+    end
+
+    -- Handle equation normalization: move right to left (left - right = 0)
+    if expr.type == "equation" and expr.left and expr.right then
+        local sub_expr = { type = "sub", left = expr.left, right = expr.right, _from_equation = true }
+        return simplify_step(sub_expr)
+    end
 
     -- Recursively simplify children first
     local new_expr = deepcopy(expr)
 
-    -- Debug print for all nodes at entry (full AST node)
-    print("DEBUG: AST node received by simplify_step:\n" .. ast_to_string(new_expr))
+    -- Preserve subtraction by zero if part of an equation during solve
+    if new_expr.type == "sub" and is_num(new_expr.right) and new_expr.right.value == 0 then
+        if new_expr._from_equation then
+            return new_expr
+        else
+            return simplify_step(new_expr.left)
+        end
+    end
 
-    -- Only simplify known types; preserve unknown types (e.g. unimplemented_integral)
+    -- Only simplify known types; preserve unknown types
     local known_types = {
         number = true, variable = true, constant = true, pow = true, add = true, mul = true,
         sin = true, cos = true, ln = true, exp = true, integral = true, func = true, neg = true,
-        series = true
+        series = true, sub = true, div = true
     }
     if not known_types[new_expr.type] then
-        return new_expr -- Preserve unknown node types like unimplemented_integral
+        return new_expr
     end
 
     if new_expr.type == "pow" then
@@ -532,124 +1107,29 @@ local function simplify_step(expr)
         for i = 1, #new_expr.args do
             new_expr.args[i] = simplify_step(new_expr.args[i])
         end
-    elseif new_expr.type == "neg" and new_expr.arg then
-        new_expr.arg = simplify_step(new_expr.arg)
-        -- Double negation elimination: -(-expr) => expr
-        if new_expr.arg and new_expr.arg.type == "neg" then
-            return simplify_step(new_expr.arg.arg)
+    elseif new_expr.type == "neg" then
+        local val_field = new_expr.arg or new_expr.value
+        val_field = simplify_step(val_field)
+        if val_field.type == "neg" then
+            return simplify_step(val_field.arg or val_field.value)
         end
+        new_expr.arg = val_field
+        new_expr.value = nil
     elseif new_expr.type == "constant" then
-        -- Recursively simplify the value of the constant
         new_expr.value = simplify_step(new_expr.value)
         return new_expr.value
     end
 
-    -- Integration logic using the integration engine
-    if new_expr.type == "integral" then
-        local integrand = simplify_step(new_expr.integrand)
-        local respect_to = new_expr.respect_to
-
-        if _G.integrate and _G.integrate.integrateAST then
-            local integrated = _G.integrate.integrateAST(integrand, respect_to)
-            if integrated then
-                return simplify_step(integrated)
-            end
-        end
-
-        -- Fallback symbolic node if integration fails
-        return { type = "integral", integrand = integrand, respect_to = respect_to }
-    end
-
-    -- Handle func("int", {expr, var}) as symbolic integral, with debug tracing
-    if new_expr.type == "func" and new_expr.name == "int" and new_expr.args then
-        local integrand = simplify_step(new_expr.args[1])
-        local respect_to = "x"
-        if new_expr.args[2] and new_expr.args[2].type == "variable" then
-            respect_to = new_expr.args[2].name
-        end
-
-        print("Integrating func int with integrand:", simplify.pretty_print(integrand), "respect_to:", respect_to)
-
-        local integrated = nil
-        if _G.integrate and _G.integrate.integrateAST then
-            integrated = _G.integrate.integrateAST(integrand, respect_to)
-        else
-            print("Warning: _G.integrate.integrateAST missing")
-        end
-
-        print("Integration result:", integrated and simplify.pretty_print(integrated) or "nil")
-
-        if integrated then
-            return simplify_step(integrated)
-        else
-            print("Integration failed, returning symbolic int node")
-            return {
-                type = "func",
-                name = "int",
-                args = { integrand, { type = "variable", name = respect_to } }
-            }
-        end
-    end
-
-    -- Debug: print each stage
-    print("Original:", simplify.pretty_print(new_expr))
-
     new_expr = flatten(new_expr)
-    print("After flatten:", simplify.pretty_print(new_expr))
-
     new_expr = sort_args(new_expr)
-    print("After sort_args:", simplify.pretty_print(new_expr))
-
-    new_expr = fold_constants(new_expr)
-    print("After fold_constants:", simplify.pretty_print(new_expr))
-
+    new_expr = fold_constants_recursive(new_expr)
     new_expr = collect_like_terms(new_expr)
-    print("After collect_like_terms:", simplify.pretty_print(new_expr))
-
     new_expr = simplify_powers(new_expr)
-    print("After simplify_powers:", simplify.pretty_print(new_expr))
-
     new_expr = combine_powers(new_expr)
-    print("After combine_powers:", simplify.pretty_print(new_expr))
-
     new_expr = distribute_simple(new_expr)
-    print("After distribute_simple:", simplify.pretty_print(new_expr))
-
     new_expr = expand_special_cases(new_expr)
-    print("After expand_special_cases:", simplify.pretty_print(new_expr))
-
     new_expr = apply_trig_identities(new_expr)
-    print("After apply_trig_identities:", simplify.pretty_print(new_expr))
-
     new_expr = apply_log_identities(new_expr)
-    print("After apply_log_identities:", simplify.pretty_print(new_expr))
-
-    -- Series expansion handling
-    if new_expr.type == "series" and _G.series and _G.series.expand then
-        local func = simplify_step(new_expr.func)
-        local var = simplify_step(new_expr.var)
-        local center = simplify_step(new_expr.center)
-        local order = simplify_step(new_expr.order)
-
-        assert(var.type == "variable", "series var must be a variable")
-
-        -- Expand the series using the series module
-        local expanded = _G.series.expand(func.name, var, center.value, order.value)
-
-        -- Fully simplify the expanded series recursively
-        local simplified_expanded = simplify_step(expanded)
-
-        -- Fold constants to clean up factorial/gamma evaluations
-        simplified_expanded = fold_constants(simplified_expanded)
-
-        -- Collect like terms and simplify powers for neatness
-        simplified_expanded = collect_like_terms(simplified_expanded)
-        simplified_expanded = simplify_powers(simplified_expanded)
-        simplified_expanded = combine_powers(simplified_expanded)
-        simplified_expanded = fold_constants(simplified_expanded) -- again fold any new constants
-
-        return simplified_expanded
-    end
 
     return new_expr
 end
@@ -729,6 +1209,16 @@ local function is_simple_factor(expr)
 end
 
 local function pretty_print_internal(expr, parent_op, position)
+    if not expr then return "<nil>" end
+
+    if expr.type == "solutions" and expr.solutions then
+        local parts = {}
+        for i, sol in ipairs(expr.solutions) do
+            local sol_str = pretty_print_internal(sol, nil, nil)
+            table.insert(parts, "Solution " .. i .. ": " .. sol_str)
+        end
+        return table.concat(parts, "\n")
+    end
     -- Numbers
     if is_num(expr) then
         if expr.value >= 0 then
@@ -746,9 +1236,9 @@ local function pretty_print_internal(expr, parent_op, position)
         return expr.name
     end
     -- Negation
-    if expr.type == "neg" and expr.arg then
-        local inner = pretty_print_internal(expr.arg, "neg", "right")
-        if not is_simple_factor(expr.arg) then
+    if expr.type == "neg" and expr.value then
+        local inner = pretty_print_internal(expr.value, "neg", "right")
+        if not is_simple_factor(expr.value) then
             inner = "(" .. inner .. ")"
         end
         return "-" .. inner
@@ -971,16 +1461,62 @@ local function pretty_print_internal(expr, parent_op, position)
         return "lim_(" .. expr.var .. "→" .. to_str .. ") " .. expr_str
     end
     -- Pretty print for series node
-if expr.type == "series" and expr.func and expr.var and expr.center and expr.order then
-    local func_str = pretty_print_internal(expr.func, nil, nil)
-    local var_str = pretty_print_internal(expr.var, nil, nil)
-    local center_str = pretty_print_internal(expr.center, nil, nil)
-    local order_str = pretty_print_internal(expr.order, nil, nil)
-    return "series(" .. func_str .. ", " .. var_str .. ", " .. center_str .. ", " .. order_str .. ")"
-end
+    if expr.type == "series" and expr.func and expr.var and expr.center and expr.order then
+        local func_str = pretty_print_internal(expr.func, nil, nil)
+        local varName_str = pretty_print_internal(expr.var, nil, nil)
+        local center_str = pretty_print_internal(expr.center, nil, nil)
+        local order_str = pretty_print_internal(expr.order, nil, nil)
+        return "series(" .. func_str .. ", " .. varName_str .. ", " .. center_str .. ", " .. order_str .. ")"
+    end
+
+    -- Pretty print for plus-minus node ("pm")
+    if expr.type == "pm" and expr.left and expr.right then
+        local left_str = pretty_print_internal(expr.left, nil, nil)
+        local right_str = pretty_print_internal(expr.right, nil, nil)
+        return "(" .. left_str .. " ± " .. right_str .. ")"
+    end
+
+    -- Pretty print for tensor node (recursive for arbitrary depth)
+    if expr.type == "tensor" and expr.elements then
+        local function pretty_print_tensor_elements(elems)
+            local strs = {}
+            for i, elem in ipairs(elems) do
+                if type(elem) == "table" and elem.type == "tensor" and elem.elements then
+                    strs[i] = "[" .. table.concat(pretty_print_tensor_elements(elem.elements), ", ") .. "]"
+                else
+                    strs[i] = pretty_print_internal(elem, nil, nil)
+                end
+            end
+            return strs
+        end
+        return "[" .. table.concat(pretty_print_tensor_elements(expr.elements), ", ") .. "]"
+    end
+
     return "<unknown>"
 end
-
+-- Debug print full AST for any expression
+function simplify.debug_print_ast(expr)
+    print("DEBUG AST dump:\n" .. ast_to_string(expr))
+end
+-- Recursively round all number nodes (including those inside expressions like mul, add, etc.)
+local function recursively_round_numbers(expr)
+    if type(expr) ~= "table" then return expr end
+    if expr.type == "number" and type(expr.value) == "number" then
+        local p = get_precision()
+        expr.value = round_to_precision(expr.value, p)
+        return expr
+    end
+    local out = {}
+    for k, v in pairs(expr) do
+        if type(v) == "table" then
+            out[k] = recursively_round_numbers(v)
+        else
+            out[k] = v
+        end
+    end
+    setmetatable(out, getmetatable(expr))
+    return out
+end
 -- ===== PUBLIC API =====
 
 function simplify.simplify(expr)
@@ -988,7 +1524,8 @@ function simplify.simplify(expr)
 end
 
 function simplify.pretty_print(expr)
-    return pretty_print_internal(expr, nil, nil)
+    local display_expr = recursively_round_numbers(deepcopy(expr))
+    return pretty_print_internal(display_expr, nil, nil)
 end
 
 function simplify.canonicalize(expr)
@@ -1024,6 +1561,7 @@ function simplify.simplify_with_stats(expr)
     }
 end
 
+
+
 -- Export to global if needed (keeping compatibility)
 _G.simplify = simplify
-

@@ -60,23 +60,21 @@ CLOSING_MSGS=(
 
 # List of source Lua files
 FILES=(
-  "src/init.lua"
-  "src/ast.lua"
-  "src/errors.lua"
-  "src/parser.lua"
-  "src/factorial.lua"
-  
-  "src/simplify.lua"
-  "src/matrix.lua"
-  "src/derivative.lua"
-  "src/trig.lua"       
-  "src/integrate.lua"
-  
-  "src/physics.lua"
-  "src/solve.lua"
-  
-  "src/series.lua"
-  "src/gui.lua"
+  "src/exact.lua"       # core exact number system first
+"src/errors.lua"      # utility early
+"src/ast.lua"         # core AST definitions
+"src/parser.lua"      # depends on ast, errors
+"src/factorial.lua"   # depends on exact, ast
+"src/simplify.lua"    # depends on ast, exact, errors
+"src/tensor.lua"      # depends on ast, exact
+"src/trig.lua"        # depends on ast, exact
+"src/derivative.lua"  # depends on ast, simplify, trig
+"src/integrate.lua"   # depends on ast, simplify, derivative, trig
+"src/constants.lua"   # depends on ast, exact
+"src/series.lua"      # depends on ast, simplify, exact
+"src/solve.lua"       # depends on ast, simplify, exact, factorial
+"src/init.lua"        # main entry, depends on everything loaded
+"src/gui.lua"         # UI, depends on everything loaded
 )
 
 OUT="build.lua"

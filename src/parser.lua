@@ -190,6 +190,17 @@ function parser.tokenize(expr)
     end
   end
 
+  -- Insert commas between adjacent tensor brackets like '][' to fix TI calculator formatting
+  local j = 2
+  while j <= #tokens do
+    local t1, t2 = tokens[j-1], tokens[j]
+    if t1.type == ']' and t2.type == '[' then
+      table.insert(tokens, j, {type=",", value=","})
+      j = j + 1
+    end
+    j = j + 1
+  end
+
   -- Insert implicit multiplication tokens as before
   local j = 2
   while j <= #tokens do
@@ -212,114 +223,51 @@ end
 -- Parser: Because recursion is the only way to feel alive.
 --   Now with precedence, unary minus, function calls, and, of course, matrices.
 
--- Matrix parsing: because spreadsheets weren't enough.
-local function parse_matrix(tokens, idx)
-  -- Expect '[' to start, because obviously that's how math works now.
-  assert(tokens[idx] and tokens[idx].type == '[', 
-         errors.invalid("parse_matrix", "expected '[' to start matrix (did you mean to type something else?)"))
-  
-  local i = idx + 1
-  
-  -- Handle empty matrix case, because someone just loves empty brackets.
-  if tokens[i] and tokens[i].type == ']' then
-    return {type="matrix", rows={}}, i + 1
-  end
-  
-  -- Decide if it's a 1D vector or a 2D matrix, because ambiguity is fun.
-  -- Look ahead to see if first element is '['
-  if tokens[i] and tokens[i].type == '[' then
-    -- This is a 2D matrix [[...], [...]] -- because 1D was too boring.
-    local rows = {}
-    
-    -- Parse first row, because why not nest things more.
-    i = i + 1 -- skip '['
-    local current_row = {}
-    
-    -- Parse elements in first row, because commas are the new semicolons.
-    if tokens[i] and tokens[i].type ~= ']' then
-      local elem, ni = parser.parseExpr(tokens, i)
-      table.insert(current_row, elem)
-      i = ni
-      
-      while tokens[i] and tokens[i].type == ',' do
-        local next_elem
-        next_elem, i = parser.parseExpr(tokens, i + 1)
-        table.insert(current_row, next_elem)
-      end
-    end
-    
-    -- Expect ']' to end first row (because matching brackets is a core life skill).
-    assert(tokens[i] and tokens[i].type == ']', 
-           errors.invalid("parse_matrix", "expected ']' to end matrix row (or maybe just give up?)"))
-    i = i + 1
-    
-    table.insert(rows, current_row)
-    local expected_cols = #current_row
-    
-    -- Parse remaining rows, because you thought one row was enough? Ha.
-    while tokens[i] and tokens[i].type == ',' do
-      i = i + 1 -- skip comma
-      
-      -- Parse next row, because every matrix needs more rows.
-      assert(tokens[i] and tokens[i].type == '[', 
-             errors.invalid("parse_matrix", "expected '[' to start matrix row (you broke the symmetry)"))
-      i = i + 1
-      
-      local row = {}
-      
-      -- Parse elements in this row, because repetition is the spice of life.
-      if tokens[i] and tokens[i].type ~= ']' then
-        local elem, ni = parser.parseExpr(tokens, i)
-        table.insert(row, elem)
+
+-- Tensor parsing: supports arbitrary rank tensors (nested lists of expressions).
+local function parse_tensor(tokens, idx)
+  -- Expect '[' to start tensor.
+  assert(tokens[idx] and tokens[idx].type == '[',
+         errors.invalid("parse_tensor", "expected '[' to start tensor (did you mean to type something else?)"))
+
+  local function parse_elements(i)
+    local elements = {}
+    local first = true
+    while true do
+      if tokens[i] and tokens[i].type == '[' then
+        -- Recursively parse a sub-tensor and always wrap as {type="tensor", elements=...}
+        local sub_elems, ni = parse_elements(i + 1)
+        table.insert(elements, {type = "tensor", elements = sub_elems})
         i = ni
-        
-        while tokens[i] and tokens[i].type == ',' do
-          local next_elem
-          next_elem, i = parser.parseExpr(tokens, i + 1)
-          table.insert(row, next_elem)
+      elseif tokens[i] and tokens[i].type ~= ']' then
+        -- Parse a scalar element
+        local elem, ni = parser.parseExpr(tokens, i)
+        if type(elem) == "number" then
+          table.insert(elements, { type = "number", value = elem })
+        else
+          table.insert(elements, elem)
         end
+        i = ni
       end
-      
-      -- Expect ']' to end this row (because brackets are your new best friend).
-      assert(tokens[i] and tokens[i].type == ']', 
-             errors.invalid("parse_matrix", "expected ']' to end matrix row (math is hard)"))
-      i = i + 1
-      
-      -- Check row length consistency, because apparently rectangular matrices are a thing.
-      assert(#row == expected_cols, 
-             errors.invalid("parse_matrix", "matrix rows must have same number of columns (nice try)"))
-      
-      table.insert(rows, row)
-    end
-    
-    -- Expect ']' to end matrix, because you love counting brackets.
-    assert(tokens[i] and tokens[i].type == ']', 
-           errors.invalid("parse_matrix", "expected ']' to end matrix (you almost made it)"))
-    
-    return {type="matrix", rows=rows}, i + 1
-  else
-    -- This is a 1D vector [a,b,c] - because 2D was too much work.
-    local row = {}
-    
-    -- Parse elements, because lists are just sad matrices.
-    if tokens[i] and tokens[i].type ~= ']' then
-      local elem, ni = parser.parseExpr(tokens, i)
-      table.insert(row, elem)
-      i = ni
-      
-      while tokens[i] and tokens[i].type == ',' do
-        local next_elem
-        next_elem, i = parser.parseExpr(tokens, i + 1)
-        table.insert(row, next_elem)
+      if tokens[i] and tokens[i].type == ',' then
+        i = i + 1
+        first = false
+      elseif tokens[i] and tokens[i].type == ']' then
+        return elements, i + 1
+      else
+        break
       end
     end
-    
-    -- Expect ']' to end vector (don't forget your closing bracket, rebel).
-    assert(tokens[i] and tokens[i].type == ']', 
-           errors.invalid("parse_matrix", "expected ']' to end vector (you just had to forget, didn't you?)"))
-    
-    return {type="matrix", rows={row}}, i + 1
+    error(errors.invalid("parse_tensor", "expected ',' or ']' in tensor definition"))
   end
+
+  local i = idx + 1
+  if tokens[i] and tokens[i].type == ']' then
+    return {type="tensor", elements={}}, i + 1
+  end
+
+  local elements, ni = parse_elements(i)
+  return {type="tensor", elements=elements}, ni
 end
 
 -- Handles literals, variables, function calls, parentheses, matrices, and unary minus.
@@ -380,13 +328,13 @@ local function parse_primary(tokens, idx)
       if tok.value == "series" then
         local i = idx + 2
         local func_expr, ni = parser.parseExpr(tokens, i)
-        assert(tokens[ni] and tokens[ni].type == ",", "expected ',' after function expression in series()")
+        if not (tokens[ni] and tokens[ni].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
         local var_node, ni2 = parser.parseExpr(tokens, ni + 1)
-        assert(tokens[ni2] and tokens[ni2].type == ",", "expected ',' after variable in series()")
+        if not (tokens[ni2] and tokens[ni2].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
         local center_node, ni3 = parser.parseExpr(tokens, ni2 + 1)
-        assert(tokens[ni3] and tokens[ni3].type == ",", "expected ',' after center in series()")
+        if not (tokens[ni3] and tokens[ni3].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
         local order_node, ni4 = parser.parseExpr(tokens, ni3 + 1)
-        assert(tokens[ni4] and tokens[ni4].type == ")", "expected ')' to close series()")
+        if not (tokens[ni4] and tokens[ni4].type == ")") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
         return {
           type = "series",
           func = func_expr,
@@ -450,8 +398,8 @@ local function parse_primary(tokens, idx)
     assert(tokens[ni] and tokens[ni].type == ')', "expected ')'")
     return wrap_factorial(node, ni+1)
   elseif tok.type == '[' then
-    local matrix, ni = parse_matrix(tokens, idx)
-    return wrap_factorial(matrix, ni)
+    local tensor, ni = parse_tensor(tokens, idx)
+    return wrap_factorial(tensor, ni)
   elseif tok.type == 'string' then
     return {type='string', value=tok.value}, idx + 1
   elseif tok.type == "op" and tok.value == '-' then
@@ -584,9 +532,61 @@ function parser.parse(expr)
   -- Proceed with building AST etc...
   local ok, ast_or_err = pcall(parser.buildAST, tokens)
   if not ok then
-    error(errors.invalid("parse", tostring(ast_or_err)))
+    local err_msg = tostring(ast_or_err)
+    if err_msg:match("parse%(series%)") then
+      error(errors.invalid("parse(series)", err_msg))
+    elseif err_msg:match("parse%(integral%)") then
+      error(errors.invalid("parse(integral)", err_msg))
+    elseif err_msg:match("parse%(derivative%)") then
+      error(errors.invalid("parse(derivative)", err_msg))
+    elseif err_msg:match("parse%(matrix%)") then
+      error(errors.invalid("parse(matrix)", err_msg))
+    else
+      error(errors.invalid("parse", err_msg))
+    end
   end
-  return ast_or_err
+  -- Automatically simplify after parsing if possible
+  local simplified = rawget(_G, "simplify") and _G.simplify.simplify_step and _G.simplify.simplify_step(ast_or_err) or ast_or_err
+
+  -- Evaluate factorial and integral nodes if possible (replace factorial(func(number)) with number node, and int(number, var) with number node)
+  local function evaluate_nodes(node)
+      if type(node) ~= "table" then return node end
+
+      -- Evaluate factorial for numeric args
+      if node.type == "func" and node.name == "factorial" and node.args and #node.args == 1 then
+          local arg = evaluate_nodes(node.args[1])
+          if arg.type == "number" and _G.evaluateFactorial then
+              return { type = "number", value = _G.evaluateFactorial(arg.value) }
+          end
+          node.args[1] = arg
+          return node
+      end
+
+      -- Evaluate integral if expr is numeric
+      if node.type == "func" and node.name == "int" and node.args and #node.args == 2 then
+          local expr = evaluate_nodes(node.args[1])
+          local var = evaluate_nodes(node.args[2])
+          if expr.type == "number" and var.type == "variable" and _G.evaluateIntegral then
+              return { type = "number", value = _G.evaluateIntegral(expr.value, var.name) }
+          end
+          node.args[1] = expr
+          node.args[2] = var
+          return node
+      end
+
+      -- Recurse
+      if node.args then
+          for i, arg in ipairs(node.args) do
+              node.args[i] = evaluate_nodes(arg)
+          end
+      elseif node.value then
+          node.value = evaluate_nodes(node.value)
+      end
+      return node
+  end
+
+  local evaluated = evaluate_nodes(simplified)
+  return evaluated
 end
 
 _G.parser = parser

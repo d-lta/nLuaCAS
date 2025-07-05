@@ -293,6 +293,10 @@ local function try_integration_by_parts(node, var)
   end
   
   local second_integral = integrateAST(ast.mul(V, du), var)
+  -- Prevent infinite recursion: if we get back the same integral, bail out
+  if simplify.expr_equal(second_integral, node) then
+    return nil
+  end
   if second_integral and second_integral.type ~= "unimplemented_integral" then
     return ast.sub(ast.mul(best_u, V), second_integral)
   end
@@ -588,6 +592,10 @@ local function integrateAST(node, var, bounds)
     if #constants > 0 and #variables > 0 then
       local const_product = #constants == 1 and constants[1] or ast.mul(table.unpack(constants))
       local var_product = #variables == 1 and variables[1] or ast.mul(table.unpack(variables))
+      -- Prevent infinite recursion if nothing was factored out (var_product == node)
+      if simplify.expr_equal(var_product, node) then
+        return { type = "unimplemented_integral", original = node }
+      end
       local var_integral = integrateAST(var_product, var, bounds)
       if var_integral.type ~= "unimplemented_integral" then
         if is_definite then
@@ -964,9 +972,11 @@ local function test_integration()
   return results
 end
 
--- Export test function
 _G.test_integration = test_integration
+_G.evaluateIntegral = _G.integral
 
+-- Global exposure of integrateAST for external access
+_G.integrateAST = integrateAST
 -- Final comment: If you've made it this far, you're either very brave or very foolish.
 -- This integral engine now supports:
 -- - All the basic stuff from before (polynomials, trig, exponentials)
