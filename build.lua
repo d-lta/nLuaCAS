@@ -300,7 +300,7 @@ _G.exact = exact
 
 -- End src/exact.lua
 
--- src/exact.lua has arrived. Prepare to blame someone.
+-- Merged src/exact.lua: pray those ASTs behave.
 
 -- Begin src/errors.lua
 local errors_table = {
@@ -367,7 +367,7 @@ _G.handleIntegralError = handleIntegralError
 
 -- End src/errors.lua
 
--- Glued in src/errors.lua. Now question why you needed it.
+-- src/errors.lua is in; don’t let that parser bite you later.
 
 -- Begin src/ast.lua
 
@@ -942,7 +942,7 @@ end
 
 -- End src/ast.lua
 
--- Tossed src/ast.lua in here—go ahead, run your tests.
+-- Just added src/ast.lua—hope your logic is watertight.
 
 -- Begin src/parser.lua
 -- parser.lua: Because writing your own parser is the best way to avoid happiness.
@@ -1730,7 +1730,7 @@ end
 
 -- End src/parser.lua
 
--- Imported src/parser.lua—debuggers rejoice.
+-- You included src/parser.lua—brace for unexpected side effects.
 
 -- Begin src/factorial.lua
 -- factorial.lua
@@ -1840,7 +1840,7 @@ _G.evaluateFactorial = evaluateFactorial  -- Expose evaluateFactorial globally
 
 -- End src/factorial.lua
 
--- Imported src/factorial.lua—debuggers rejoice.
+-- Integrated src/factorial.lua: let’s hope it compiles this time.
 
 -- Begin src/simplify.lua
 local simplify = {}
@@ -3413,7 +3413,7 @@ _G.simplify = simplify
 
 -- End src/simplify.lua
 
--- Tossed src/simplify.lua in here—go ahead, run your tests.
+-- Just added src/simplify.lua—hope your logic is watertight.
 
 -- Begin src/tensor.lua
 local ast = _G.ast or error("AST module required")
@@ -3817,7 +3817,7 @@ _G.Tensor = Tensor
 
 -- End src/tensor.lua
 
--- Glued in src/tensor.lua. Now question why you needed it.
+-- Imported src/tensor.lua—debuggers rejoice.
 
 -- Begin src/trig.lua
 -- trig.lua
@@ -3894,7 +3894,7 @@ _G.trig = {
 
 -- End src/trig.lua
 
--- Imported src/trig.lua—debuggers rejoice.
+-- src/trig.lua has arrived. Prepare to blame someone.
 
 -- Begin src/derivative.lua
 -- Derivative Engine (WIP)
@@ -4179,7 +4179,7 @@ _G.diffAST = diffAST
 
 -- End src/derivative.lua
 
--- You included src/derivative.lua—brace for unexpected side effects.
+-- Integrated src/derivative.lua: let’s hope it compiles this time.
 
 -- Begin src/integrate.lua
 -- Integral Engine (Enhanced Edition - Because Apparently We're Gluttons for Punishment)
@@ -5190,7 +5190,7 @@ _G.integrateAST = integrateAST
 
 -- End src/integrate.lua
 
--- src/integrate.lua has arrived. Prepare to blame someone.
+-- You included src/integrate.lua—brace for unexpected side effects.
 
 -- Begin src/constants.lua
 local errors = _G.errors
@@ -6744,7 +6744,7 @@ _G.physics = {
 
 -- End src/constants.lua
 
--- src/constants.lua has arrived. Prepare to blame someone.
+-- Tossed src/constants.lua in here—go ahead, run your tests.
 
 -- Begin src/series.lua
 -- series.lua: Because infinite sums make us feel clever.
@@ -6863,7 +6863,7 @@ _G.series = series
 
 -- End src/series.lua
 
--- src/series.lua has arrived. Prepare to blame someone.
+-- src/series.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/solve.lua
 local function safe_sqrt(x)
@@ -8190,7 +8190,7 @@ _G.matchQuarticEq = matchQuarticEq
 
 -- End src/solve.lua
 
--- You included src/solve.lua—brace for unexpected side effects.
+-- Just added src/solve.lua—hope your logic is watertight.
 
 -- Begin src/init.lua
 platform.apilevel = "2.4"
@@ -8234,7 +8234,7 @@ end
 
 -- End src/init.lua
 
--- Merged src/init.lua: pray those ASTs behave.
+-- Glued in src/init.lua. Now question why you needed it.
 
 -- Begin src/gui.lua
 _G.darkMode = (var.recall("dark_mode") == 1)
@@ -8258,7 +8258,7 @@ local launchStartTime = timer.getMilliSecCounter()
 local showLaunchAnim = _G.showLaunchAnimation -- Initialize local variable based on global preference
 local logoX, textX = -100, -300
 local overlayAlpha = 1.0
-local overlayRegion = {x=270, y=8, w=90, h=24} -- Position this based on your layout
+local overlayRegion = {x=270, y=8, w=90, h=24} -- Position this based on the layout
 local cursorInsideOverlay = false
 
 
@@ -8747,7 +8747,7 @@ function View:onMouseDown(x, y)
 	for _, o in ipairs(self.widgetList) do
 		if o.visible and o.acceptsFocus and o:contains(x, y) then
 			self.mouseCaptured = o
-			o:onMouseDown(o, window, x - o.x, y - o.y)
+			o:onMouseDown(x - o.x, y - o.y)
 			self:setFocus(o)
 			self:invalidate()
 			return
@@ -8963,6 +8963,7 @@ function Widget:init(view, x, y, w, h)
 	self.acceptsArrowRight = false
 	self.hConstraint = "left"
 	self.vConstraint = "top"
+    
 end
 
 function Widget:repos(x, y)
@@ -8979,8 +8980,8 @@ function Widget:setFocus() end
 function Widget:releaseFocus() end
 
 function Widget:contains(x, y)
-	return x >= self.x and x <= self.x + self.w
-			and y >= self.y and y <= self.y + self.h
+ 
+    return x >= self.x and x < self.x + self.w and y >= self.y and y < self.y + self.h
 end
 
 function Widget:onMouseEnter(x, y) end
@@ -9211,6 +9212,339 @@ function TextLabel:paint(gc, focused)
 	gc:setColorRGB(0, 0, 0)
 	gc:drawString(self.text, self.x, self.y, "top")
 end
+-- TextBox widget for text input
+TextBox = class(Widget)
+function TextBox:init(view, x, y, w, h, text)
+    self.text = text or ""
+    self.cursor = #self.text
+    self.focused = false
+    self.acceptsFocus = true
+    self.acceptsChar = true
+    self.acceptsBackspace = true
+    self.acceptsEnter = true
+    Widget.init(self, view, x, y, w, h)
+end
+
+function TextBox:paint(gc, focused)
+    -- Draw border
+    gc:setColorRGB(0, 0, 0)
+    gc:drawRect(self.x, self.y, self.w, self.h)
+    
+    -- Draw background
+    if focused then
+        gc:setColorRGB(255, 255, 255)
+    else
+        gc:setColorRGB(240, 240, 240)
+    end
+    gc:fillRect(self.x + 1, self.y + 1, self.w - 2, self.h - 2)
+    
+    -- Draw text
+    gc:setColorRGB(0, 0, 0)
+    gc:drawString(self.text, self.x + 3, self.y + 3, "top")
+    
+    -- Draw cursor if focused
+    if focused then
+        local cursorX = self.x + 3 + getStringWidth(string.sub(self.text, 1, self.cursor))
+        gc:drawLine(cursorX, self.y + 2, cursorX, self.y + self.h - 3)
+    end
+end
+
+function TextBox:charIn(char)
+    self.text = string.sub(self.text, 1, self.cursor) .. char .. string.sub(self.text, self.cursor + 1)
+    self.cursor = self.cursor + 1
+    self.view:invalidate()
+end
+
+function TextBox:backspaceKey()
+    if self.cursor > 0 then
+        self.text = string.sub(self.text, 1, self.cursor - 1) .. string.sub(self.text, self.cursor + 1)
+        self.cursor = self.cursor - 1
+        self.view:invalidate()
+    end
+end
+
+function TextBox:setText(text)
+    self.text = text or ""
+    self.cursor = #self.text
+    self.view:invalidate()
+end
+
+function TextBox:getText()
+    return self.text
+end
+
+-- CheckBox widget
+CheckBox = class(Widget)
+function CheckBox:init(view, x, y, text, checked)
+    self.textid = text
+    self.text = getLocaleText(text)
+    self.checked = checked or false
+    self.acceptsFocus = true
+    self.acceptsEnter = true
+    
+    local boxSize = 12
+    local textWidth = getStringWidth(self.text)
+    local w = boxSize + 5 + textWidth
+    local h = math.max(boxSize, getStringHeight(self.text))
+    
+    Widget.init(self, view, x, y, w, h)
+end
+
+function CheckBox:paint(gc, focused)
+    local boxSize = 12
+    
+    -- Draw checkbox
+    gc:setColorRGB(0, 0, 0)
+    gc:drawRect(self.x, self.y, boxSize, boxSize)
+    gc:setColorRGB(255, 255, 255)
+    gc:fillRect(self.x + 1, self.y + 1, boxSize - 2, boxSize - 2)
+    
+    -- Draw check mark if checked
+    if self.checked then
+        gc:setColorRGB(0, 0, 0)
+        gc:drawLine(self.x + 2, self.y + 6, self.x + 5, self.y + 9)
+        gc:drawLine(self.x + 5, self.y + 9, self.x + 10, self.y + 3)
+    end
+    
+    -- Draw text
+    gc:setColorRGB(0, 0, 0)
+    gc:drawString(self.text, self.x + boxSize + 5, self.y, "top")
+    
+    -- Draw focus indicator
+    if focused then
+        gc:setColorRGB(0, 0, 255)
+        gc:drawRect(self.x - 1, self.y - 1, self.w + 2, self.h + 2)
+    end
+end
+
+function CheckBox:enterKey()
+    self.checked = not self.checked
+    self.view:invalidate()
+end
+
+-- --- START OF CHANGE ---
+-- Renamed from CheckBox:mouseDown to CheckBox:onMouseUp
+function CheckBox:onMouseUp(x, y)
+    print("CheckBox:onMouseUp called for:", self.text)
+    print("Received x:", x, " type:", type(x))
+    print("Received y:", y, " type:", type(y))
+    print("Before toggle, checked:", self.checked)
+    self.checked = not self.checked
+    print("After toggle, checked:", self.checked)
+    self.view:invalidate()
+    print("View invalidated.")
+end
+-- --- END OF CHANGE ---
+
+-- Dialog base class, inheriting from Widget
+Dialog = class(Widget)
+function Dialog:init(view, config)
+    -- Default configuration values for the dialog
+    local title = config.title or "Dialog"
+    local w = config.width or 300
+    local h = config.height or 200
+    local elements = config.elements or {}
+    self.onClose = config.onClose -- Store the custom onClose function
+
+    -- Calculate dialog position to be centered on the screen
+    local x = math.floor((platform.window:width() - w) / 2)
+    local y = math.floor((platform.window:height() - h) / 2)
+
+    -- Initialize the base Widget properties
+    Widget.init(self, view, x, y, w, h)
+
+    self.title = title
+    self.modal = true         -- Dialog is modal, meaning it captures all input
+    self.visible = true       -- Dialog starts as visible
+    self.acceptsFocus = true  -- Dialog can gain keyboard focus
+    self.acceptsEscape = true -- Allow Escape key to close the dialog
+    self.widgets = {}         -- Table to hold child widgets managed by this dialog
+    self.result = nil         -- To store dialog's return value (e.g., true for OK, false for Cancel)
+    self.namedWidgets = {}    -- NEW: Table to store child widgets by their 'name' property
+
+    for i, elem_config in ipairs(elements) do
+        local widget
+        -- Instantiate widget types based on their 'type' property in the config
+        if elem_config.type == "TextLabel" then
+            widget = TextLabel(view, elem_config.x, elem_config.y, elem_config.text)
+        elseif elem_config.type == "TextButton" then
+            local original_command = elem_config.command or function(dlg_ref, btn_ref) end -- Default command, receives dialog and button
+            widget = TextButton(view, elem_config.x, elem_config.y, elem_config.text,
+                function(btn_self) -- 'btn_self' is the TextButton instance being clicked
+                    -- Pass the dialog instance (self) and the button instance (btn_self) to the original command
+                    original_command(self, btn_self)
+                    -- If the button is configured to close the dialog, call close()
+                    if elem_config.closesDialog then
+                        self:close(true)
+                    end
+                end)
+        elseif elem_config.type == "CheckBox" then
+            widget = CheckBox(view, elem_config.x, elem_config.y, elem_config.text, elem_config.checked)
+            -- The existing special handling for checkbox by 'checkbox_' prefix can remain or be unified
+        end
+
+        -- If a widget was successfully created, add it to the dialog's managed widgets
+        if widget then
+            self:addWidget(widget)
+            -- NEW: Store a reference to the widget by its 'name' property for easy access
+            if elem_config.name then
+                self.namedWidgets[elem_config.name] = widget
+            end
+        end
+    end
+end
+
+-- Paint method for the Dialog. This draws the dialog frame and its contents.
+function Dialog:paint(gc, focused)
+    -- Draw a subtle shadow effect
+    gc:setColorRGB(128, 128, 128)
+    gc:fillRect(self.x + 3, self.y + 3, self.w, self.h)
+
+    -- Draw dialog background (light gray)
+    gc:setColorRGB(240, 240, 240)
+    gc:fillRect(self.x, self.y, self.w, self.h)
+
+    -- Draw dialog border (black)
+    gc:setColorRGB(0, 0, 0)
+    gc:drawRect(self.x, self.y, self.w, self.h)
+
+    -- Draw title bar (dark blue)
+    gc:setColorRGB(0, 0, 128)
+    gc:fillRect(self.x + 1, self.y + 1, self.w - 2, 20)
+    gc:setColorRGB(255, 255, 255) -- White text for title
+    gc:drawString(self.title, self.x + 5, self.y + 4, "top")
+
+    -- Draw a line under the title bar
+    gc:setColorRGB(0, 0, 0)
+    gc:drawLine(self.x + 1, self.y + 21, self.x + self.w - 2, self.y + 21)
+
+    -- Paint all child widgets relative to the dialog's position
+    for _, widget in ipairs(self.widgets) do
+        if widget.visible then
+            -- Pass the correct focused state to the child widget
+            local is_child_focused = (self.view:getFocus() == widget)
+            widget:paint(gc, is_child_focused)
+        end
+    end
+end
+
+-- Adds a child widget to the dialog's management.
+function Dialog:addWidget(widget)
+    table.insert(self.widgets, widget)
+    widget.parent = self -- Set the dialog as the widget's parent
+    -- Adjust widget's position to be relative to the dialog's top-left corner
+    -- assuming widget.xOrig and widget.yOrig store initial offsets from dialog
+    widget.x = self.x + widget.xOrig
+    widget.y = self.y + widget.yOrig
+    self.view:add(widget)     -- Crucial: Add the child widget to the main view for event handling
+    self.view:repos(widget)   -- Ask the view to reposition it if necessary (e.g., for layout constraints)
+end
+
+-- Activates the dialog, making it visible and focusable.
+function Dialog:activate()
+    self.visible = true
+    -- Set this dialog as the active modal dialog for the view
+    self.view.activeModalDialog = self -- ADD THIS LINE
+
+    -- Set focus to the first focusable widget within the dialog (for keyboard nav)
+    for _, widget in ipairs(self.widgets) do
+        if widget.acceptsFocus then
+            self.view:setFocus(widget)
+            break
+        end
+    end
+    self.view:invalidate() -- Request a screen redraw
+end
+
+-- Closes the dialog, making it invisible and removing its widgets from the view.
+function Dialog:close(result)
+    self.result = result
+    self.visible = false
+    -- Remove the dialog itself from the main view's tracking
+    self.view:remove(self)
+    -- Remove all child widgets from the main view's tracking
+    for _, widget in ipairs(self.widgets) do
+        self.view:remove(widget)
+    end
+    -- Call the custom onClose callback function if provided
+    if self.onClose then
+        self.onClose(self, result)
+    end
+    self.view:invalidate() -- Request a screen redraw
+end
+
+-- In your Dialog class definition (e.g., in gui.lua or dialog.lua)
+
+-- Corrected Dialog:onMouseDown
+function Dialog:onMouseDown(x, y)
+    -- Iterate through widgets from top to bottom (reverse order)
+    for i = #self.widgets, 1, -1 do
+        local widget = self.widgets[i]
+        -- Check if widget is visible, accepts focus, and contains the click coordinates
+        if widget.visible and widget.acceptsFocus and widget:contains(x, y) then
+            -- If the widget has its own onMouseDown handler, call it, passing coordinates relative to the widget
+            if widget.onMouseDown then
+                widget:onMouseDown(x - widget.x, y - widget.y)
+            end
+            -- Set focus to the clicked widget and invalidate the window for redraw
+            self.view:setFocus(widget)
+            self.view:invalidate()
+            return -- Exit after handling the click on one widget
+        end
+    end
+    -- If no child widget was clicked, check if the dialog itself was clicked
+    if self:contains(x, y) then
+        self.view:setFocus(self)
+        self.view:invalidate()
+    end
+end
+
+-- Corrected Dialog:onMouseUp
+function Dialog:onMouseUp(x, y)
+    -- Iterate through widgets from top to bottom (reverse order)
+    for i = #self.widgets, 1, -1 do
+        local widget = self.widgets[i]
+        -- Check if widget is visible, contains the release coordinates, and has an onMouseUp handler
+        if widget.visible and widget:contains(x, y) and widget.onMouseUp then
+            -- Call the widget's onMouseUp handler, passing relative coordinates and whether it was released inside
+            widget:onMouseUp(x - widget.x, y - widget.y, widget:contains(x,y))
+            return -- Exit after handling the release on one widget
+        end
+    end
+end
+
+-- Handles the Escape key press for the dialog (if acceptsEscape is true).
+function Dialog:escapeHandler()
+    if self.acceptsEscape then
+        self:close(false) -- False indicates dialog was cancelled/escaped
+    end
+end
+-- Closes the dialog, making it invisible and removing its widgets from the view.
+function Dialog:close(result)
+    self.result = result
+    self.visible = false
+
+    -- CRITICAL FIX: Reset the active modal dialog in the view
+    if self.view.activeModalDialog == self then
+        self.view.activeModalDialog = nil
+    end
+
+    -- Remove the dialog itself from the main view's tracking
+    self.view:remove(self)
+
+    -- Remove all child widgets from the main view's tracking
+    for _, widget in ipairs(self.widgets) do
+        self.view:remove(widget)
+    end
+
+    -- Call the custom onClose callback function if provided
+    if self.onClose then
+        self.onClose(self, result)
+    end
+    self.view:invalidate() -- Request a screen redraw
+end
+
+
 MenuWidget = class(Widget)
 
 function MenuWidget:init(view, x, y, items, onSelect)
@@ -9887,7 +10221,107 @@ end
 function on.returnKey()
   on.enterKey()
 end
+function Dialog:paint(gc, focused)
+    -- Draw shadow
+    gc:setColorRGB(128, 128, 128)
+    gc:fillRect(self.x + 3, self.y + 3, self.w, self.h)
 
+    -- Draw dialog background
+    gc:setColorRGB(240, 240, 240)
+    gc:fillRect(self.x, self.y, self.w, self.h)
+
+    -- Draw border
+    gc:setColorRGB(0, 0, 0)
+    gc:drawRect(self.x, self.y, self.w, self.h)
+
+    -- Draw title bar
+    gc:setColorRGB(0, 0, 128)
+    gc:fillRect(self.x + 1, self.y + 1, self.w - 2, 20)
+    gc:setColorRGB(255, 255, 255)
+    gc:drawString(self.title, self.x + 5, self.y + 4, "top")
+
+    -- Draw title bar border
+    gc:setColorRGB(0, 0, 0)
+    gc:drawLine(self.x + 1, self.y + 21, self.x + self.w - 2, self.y + 21)
+
+    -- Paint child widgets (from the dialog's perspective)
+    for _, widget in ipairs(self.widgets) do
+        if widget.visible then
+            -- Pass the correct focused state for the child widget
+            local is_child_focused = (self.view:getFocus() == widget)
+            widget:paint(gc, is_child_focused)
+        end
+    end
+end
+
+function Dialog:addWidget(widget)
+    table.insert(self.widgets, widget)
+    widget.parent = self -- Set the dialog as the widget's parent
+    -- Adjust widget's position relative to the dialog's top-left corner
+    -- This assumes widgets are added with their absolute coordinates, then adjusted.
+    widget.x = self.x + widget.xOrig
+    widget.y = self.y + widget.yOrig
+    self.view:add(widget) -- Add to main view for global event handling
+    self.view:repos(widget) -- Reposition in case constraints are set
+end
+
+function Dialog:activate()
+    self.visible = true
+    -- No need to self.view:add(self) here if it's already added in on.paint if not existing.
+    -- Set focus to the first focusable widget within the dialog if available
+    for _, widget in ipairs(self.widgets) do
+        if widget.acceptsFocus then
+            self.view:setFocus(widget)
+            break
+        end
+    end
+    self.view:invalidate()
+end
+
+function Dialog:close(result)
+    self.result = result
+    self.visible = false
+    -- Remove dialog and its child widgets from the main view's tracking
+    self.view:remove(self) -- Remove dialog itself from view's widgetList/focusList
+    for _, widget in ipairs(self.widgets) do
+        self.view:remove(widget) -- Remove child widgets from view
+    end
+    if self.onClose then
+        self.onClose(self, result)
+    end
+    self.view:invalidate()
+end
+
+function Dialog:onMouseDown(x, y)
+    -- Check if click is on dialog itself
+    if self:contains(x, y) then
+        -- Pass event to child widgets
+        for i = #self.widgets, 1, -1 do -- Iterate in reverse for topmost widget
+            local widget = self.widgets[i]
+            if widget.visible and widget:contains(x, y) and widget.acceptsMouse then
+                widget:onMouseDown(x, y)
+                self.view:setFocus(widget) -- Set focus to the clicked widget
+                return
+            end
+        end
+    end
+end
+
+function Dialog:onMouseUp(x, y)
+    -- Pass event to child widgets
+    for i = #self.widgets, 1, -1 do -- Iterate in reverse for topmost widget
+        local widget = self.widgets[i]
+        if widget.visible and widget:contains(x, y) and widget.onMouseUp then
+            widget:onMouseUp(x, y)
+            return
+        end
+    end
+end
+
+function Dialog:escapeHandler()
+    -- If escape is pressed, close the dialog
+    self:close(false) -- False indicates cancellation or escape
+end
 function on.mouseMove(x, y)
   if theView then theView:onMouseMove(x, y) end
 end
@@ -9956,99 +10390,51 @@ function on.mouseDown(x, y)
   end
   if theView then theView:onMouseDown(x, y) end
 end
-
 function on.mouseUp(x, y)
-    -- Consistent modal button hitboxes using visible regions
-    if _G.showSettingsModal then
-        local modalW, modalH = 200, 200
-        local modalX = (scrWidth - modalW) / 2
-        local modalY = (scrHeight - modalH) / 2
-        local labelX = modalX + 10
-        local labelY = modalY + 40
-        local lineHeight = 28
-        local btnW, btnH = 48, 22
-
-        -- Decimals Button
-        local decBtnX = labelX + getStringWidth("Decimals:") + 10
-        local decBtnY = labelY - 2
-        if x >= decBtnX and x <= decBtnX + btnW and y >= decBtnY and y <= decBtnY + btnH then
-            _G.modalETKButton:onMouseUp(x - decBtnX, y - decBtnY, true)
-            platform.window:invalidate()
-            return
-        end
-        -- Complex Mode Button
-        local complexLabelY = labelY + lineHeight + 85
-        local complexBtnX = labelX + getStringWidth("Complex:") + 10
-        local complexBtnY = complexLabelY - 2
-        if x >= complexBtnX and x <= complexBtnX + btnW and y >= complexBtnY and y <= complexBtnY + btnH then
-            _G.complexModeToggleBtn:onMouseUp(x - complexBtnX, y - complexBtnY, true)
-            platform.window:invalidate()
-            return
-        end
-
-        -- Precision Button - ensure button exists before checking hitbox
-        -- INJECT: create _G.precisionBtn if not exists, before hitbox check
-        if not _G.precisionBtn then
-            _G.precisionBtn = Widgets.Button{
-                text = tostring(var.recall("nLuaCAS_precision_pref") or 4),
-                position = Dimension(24, 14),
-                parent = theView,
-                onAction = function(self)
-                    local cur = var.recall("nLuaCAS_precision_pref") or 4
-                    cur = cur + 1
-                    if cur > 9 then cur = 4 end
-                    var.store("nLuaCAS_precision_pref", cur)
-                    self.text = tostring(cur)
-                    platform.window:invalidate()
-                end
-            }
-        end
-        -- Precision Button
-        local precLabelY = labelY + 2 * lineHeight
-        local precBtnX = labelX + getStringWidth("Precision:") + 10
-        local precBtnY = precLabelY - 2
-        local precBtnW = 24
-        local precBtnH = btnH - 8
-        if x >= precBtnX and x <= precBtnX + precBtnW and y >= precBtnY and y <= precBtnY + precBtnH then
-            _G.precisionBtn:onMouseUp(x - precBtnX, y - precBtnY, true)
-            platform.window:invalidate()
-            return
-        end
-
-        -- Constants Button
-        local consLabelY = labelY + lineHeight
-        local consBtnX = labelX + getStringWidth("Constants:") + 10
-        local consBtnY = consLabelY - 2
-        if x >= consBtnX and x <= consBtnX + btnW and y >= consBtnY and y <= consBtnY + btnH then
-            _G.constantsToggleBtn:onMouseUp(x - consBtnX, y - consBtnY, true)
-            platform.window:invalidate()
-            return
-        end
-
-        -- Category Button
-        local catLabelY = consLabelY + 2 * lineHeight
-        local catBtnX = labelX + getStringWidth("Category:") + 10
-        local catBtnY = catLabelY - 2
-        if x >= catBtnX and x <= catBtnX + 90 and y >= catBtnY and y <= catBtnY + btnH then
-            _G.categoryBtn:onMouseUp(x - catBtnX, y - catBtnY, true)
-            platform.window:invalidate()
-            return
-        end
-
-        -- Constants List Toggles
-        local listY = catLabelY + lineHeight
-        local avail = var.recall("available_constants") or {}
-        local clist = get_constants_by_category(_G.currentConstCategory)
-        for i, name in ipairs(clist) do
-            local cy = listY + (i - 1) * 15
-            if y >= cy and y <= cy + 15 and x >= labelX and x <= labelX + 200 then
-                avail[name] = not (avail[name] == true)
-                var.store("available_constants", avail)
-                platform.window:invalidate()
-                return
-            end
+    -- This block should only CREATE and ACTIVATE the settings dialog if it needs to be shown.
+    -- The painting should happen in on.paint.
+    print("\n--- on.mouseUp event ---") -- <--- IS THIS SHOWING?
+    print("Current activeModalDialog (on entry):", tostring(theView.activeModalDialog)) -- <--- IS THIS SHOWING?
+    if theView then
+        if theView.activeModalDialog then
+            -- If a modal dialog is active, send all mouse events directly to it
+            theView.activeModalDialog:onMouseUp(x, y)
+            return -- Crucial: stop further processing if a modal dialog handled it
+        else
+            -- Otherwise, let the normal view handle it
+            theView:onMouseUp(x, y)
         end
     end
+    
+
+    -- Similar for the Help Dialog
+    if _G.showHelpModal then
+        if not _G.helpDialog then
+            -- Create the help dialog only once
+            -- ... (your existing dialog creation code, without _G.helpDialog:paint) ...
+
+            -- Ensure it's added to the view and activated when created
+            theView:add(_G.helpDialog)
+            _G.helpDialog:activate()
+        end
+        -- Remove the _G.helpDialog:paint(gc, true) line from here!
+    end
+    
+    -- Similar for the Startup Hint Dialog
+    if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
+        if not _G.startupHintDialog then
+            -- Create the startup hint dialog only once
+            -- ... (your existing dialog creation code, without _G.startupHintDialog:paint) ...
+
+            -- Ensure it's added to the view and activated when created
+            theView:add(_G.startupHintDialog)
+            _G.startupHintDialog:activate()
+        end
+        -- Remove the _G.startupHintDialog:paint(gc, true) line from here!
+    end
+    
+    -- This line is correct and should remain. It dispatches the mouse event
+    -- to the appropriate UI element, including any active dialog.
     if theView then theView:onMouseUp(x, y) end
 end
 
@@ -10271,6 +10657,7 @@ function initGUI()
         sbv = VScrollBar(theView, 0, -1, 5, scrHeight + 1)
         sbv:setHConstraints("right", 0)
         theView:add(sbv)
+        
 
         -- Input editor at bottom (MathEditor) - the star of the show
         fctEditor = MathEditor(theView, 2, border, scrWidth - 4 - sbv.w, 30, "")
@@ -10318,75 +10705,90 @@ function initGUI()
 end
 
 
-
-
-
-function on.contextMenu()
-    if not theView then return true end
-    -- clear any existing menus
-    if _G.menuStack then
-        for _, m in ipairs(_G.menuStack) do theView:remove(m) end
+local function addStringToFctEditor(actionString)
+    -- Assuming _G.fctEditor is the global MathEditor instance (or similar)
+    
+    if _G.fctEditor then
+        _G.fctEditor:addString(actionString)
+        -- Invalidate the window to ensure UI updates, as the system toolpalette doesn't
+        -- automatically trigger redraws for the custom UI elements.
+        platform.window:invalidate()
+    else
+        print("Error: _G.fctEditor not available to add string: " .. actionString)
     end
-    _G.menuStack = {}
-
-    local menuX, menuY, menuWidth = 6, 38, 120
-
-    local submenuMap = {
-        Calculus = {"Differentiate", "Integrate", "Factorial", "Series", "Abs", "Empty Matrix"},
-        Solve    = {"Solve Equation"},
-        Series   = {"Taylor Series", "Fourier Series", "Maclaurin Series"},
-    }
-
-    local actionMap = {
-        Differentiate     = "d/dx()",
-        Integrate         = "∫(,)",
-        Abs               = "abs()",
-        ["Empty Matrix"]  = "[[,],[,]]",
-        ["Factorial"]     = "factorial(",
-        ["Taylor Series"]    = "series(f,x,a,n)",
-        ["Fourier Series"]   = "series(f,x,a,n)",
-        ["Maclaurin Series"] = "series(f,x,0,n)",
-        ["Solve Equation"]   = "solve(",
-    }
-
-    local function pushMenu(items)
-        local depth = #_G.menuStack
-        local x = menuX + depth * menuWidth
-        if depth > 0 then _G.menuStack[depth].muted = true end
-
-        local m = MenuWidget(theView, x, menuY, items, function(idx, text)
-            if submenuMap[text] then
-                pushMenu(submenuMap[text])
-            elseif actionMap[text] then
-                theView:setFocus(fctEditor)
-                fctEditor:addString(actionMap[text])
-                for _, mm in ipairs(_G.menuStack) do theView:remove(mm) end
-                _G.menuStack = nil
-                theView:invalidate()
-            elseif text == "Settings" then
-                _G.showSettingsModal = true
-                platform.window:invalidate()
-                for _, mm in ipairs(_G.menuStack) do theView:remove(mm) end
-                _G.menuStack = nil
-            elseif text == "Help" then
-                _G.showHelpModal = true
-                platform.window:invalidate()
-                for _, m in ipairs(_G.menuStack) do theView:remove(m) end
-                _G.menuStack = nil
-            end
-        end)
-
-        m.level = depth + 1
-        m.submenus = submenuMap
-        m.muted    = false
-        table.insert(_G.menuStack, m)
-        theView:add(m); theView:setFocus(m); theView:invalidate()
-    end
-
-    -- root menu
-    pushMenu({"Calculus", "Solve", "Settings", "Help"})
-    return true
 end
+
+local function showSettingsModal()
+    _G.showSettingsModal = true
+    platform.window:invalidate() -- Invalidate to show the modal
+end
+
+local function showHelpModal()
+    _G.showHelpModal = true
+    platform.window:invalidate() -- Invalidate to show the modal
+end
+
+-- Handler function for toolpalette menu items
+local function toolpaletteMenuHandler(toolboxName, menuItemName)
+    if toolboxName == "Calculus" then
+        if menuItemName == "Differentiate" then
+            addStringToFctEditor("d/dx()")
+        elseif menuItemName == "Integrate" then
+            addStringToFctEditor("∫(,)")
+        elseif menuItemName == "Abs" then
+            addStringToFctEditor("abs()")
+        elseif menuItemName == "Factorial" then
+            addStringToFctEditor("factorial(")
+        elseif menuItemName == "Empty Matrix" then
+            addStringToFctEditor("[[,],[,]]")
+        elseif menuItemName == "Taylor Series" then
+            addStringToFctEditor("series(f,x,a,n)")
+        elseif menuItemName == "Fourier Series" then
+            addStringToFctEditor("series(f,x,a,n)")
+        elseif menuItemName == "Maclaurin Series" then
+            addStringToFctEditor("series(f,x,0,n)")
+        end
+    elseif toolboxName == "Solve" then
+        if menuItemName == "Solve Equation" then
+            addStringToFctEditor("solve(")
+        end
+    elseif toolboxName == "App Options" then
+        if menuItemName == "Settings" then
+            showSettingsModal()
+        elseif menuItemName == "Help" then
+            showHelpModal()
+        end
+    end
+end
+
+-- Correct menu structure for toolpalette.register
+local myToolPaletteMenuStructure = {
+    {"Calculus", -- First toolbox
+        {"Differentiate", toolpaletteMenuHandler},
+        {"Integrate", toolpaletteMenuHandler},
+        {"Abs", toolpaletteMenuHandler},
+        {"Factorial", toolpaletteMenuHandler},
+        {"Empty Matrix", toolpaletteMenuHandler},
+        "-", -- Separator
+        {"Taylor Series", toolpaletteMenuHandler},
+        {"Fourier Series", toolpaletteMenuHandler},
+        {"Maclaurin Series", toolpaletteMenuHandler},
+    },
+    {"Solve", -- Second toolbox
+        {"Solve Equation", toolpaletteMenuHandler},
+    },
+    {"App Options", -- Third toolbox
+        {"Settings", toolpaletteMenuHandler},
+        {"Help", toolpaletteMenuHandler},
+    }
+}
+
+-- Register the tool palette
+toolpalette.register(myToolPaletteMenuStructure)
+
+
+
+
 
 
 function resizeGC(gc)
@@ -10435,7 +10837,7 @@ function on.paint(gc)
         gc:fillRect(0, 0, scrWidth, scrHeight)
 
         -- Ensure assets exist
-        -- This block should be inside your on.timer() function or wherever the animation rendering happens
+        -- This block should be inside the on.timer() function or wherever the animation rendering happens
 if showLaunchAnim then -- Add this conditional check here
     if n_logo and luacas_text then
 
@@ -10536,7 +10938,7 @@ end
             gc:drawString(outputStr, 10, scrHeight - 25, "top")
         end
         -- Draw custom settings icon button at top right if modal not open
-        -- (π icon drawing block removed)
+        
         theView:paint(gc)
 
         -- Draw the bottom input area background fully respecting dark mode (after theView:paint)
@@ -10567,248 +10969,187 @@ end
 
         -- Draw settings modal if enabled (block moved to end)
     end
-    -- Draw settings modal if enabled (moved here to render on top)
-    if _G.showSettingsModal then
-        local modalW, modalH = 200, 200
-        local modalX = (scrWidth - modalW) / 2
-        local modalY = (scrHeight - modalH) / 2
+    
+-- Replace the entire manual drawing block for _G.showSettingsModal
+if _G.showSettingsModal then
+    -- Create the settings dialog only once
+    if not _G.settingsDialog then
+        -- Define base positions for elements relative to the dialog's top-left corner (0,0)
+        local labelCol1X = 20    -- X-coordinate for labels in the first column
+        local valueCol1X = 120   -- X-coordinate for buttons/values, estimated for alignment
+        local lineHeight = 28    -- Vertical spacing between lines of elements
+        local btnW, btnH = 48, 22 -- Standard button width and height
+        if fctEditor and fctEditor.editor then -- Add nil check for robustness
+            fctEditor.editor:setVisible(false)
+        end
 
-        local modalBg = _G.darkMode and {30, 30, 30} or {240, 240, 240}
-        local modalBorder = _G.darkMode and {200, 200, 200} or {0, 0, 0}
-        local modalText = _G.darkMode and {220, 220, 220} or {0, 0, 0}
+        _G.settingsDialog = Dialog(theView, {
+            title = "Settings",
+            width = 300,
+            height = 190,
+            x = 50,  
+            y = 50,  
 
-        gc:setColorRGB(unpackColor(modalBg))
-        gc:fillRect(modalX, modalY, modalW, modalH)
-        gc:setColorRGB(unpackColor(modalBorder))
-        gc:drawRect(modalX, modalY, modalW, modalH)
-        gc:setColorRGB(unpackColor(modalText))
-        gc:drawString("Settings", modalX + 10, modalY + 10, "top")
-        gc:setFont("sansserif", "i", 9)
-        gc:setColorRGB(255, 100, 100)
-        gc:drawString("(Dark Mode is experimental)", modalX + 10, modalY + 26, "top")
-        gc:setFont("sansserif", "r", 12)
-        gc:setColorRGB(unpackColor(modalText))
+            elements = {
+                -- Decimals Toggle
+                { type = "TextLabel", x = labelCol1X, y = 40, text = "Decimals:" },
+                { type = "TextButton", x = valueCol1X, y = 38, text = (_G.autoDecimal and "ON" or "OFF"),
+                  width = btnW, height = btnH, name = "decimalsBtn",
+                  command = function(dlg, btn)
+                      _G.autoDecimal = not _G.autoDecimal
+                      btn.text = (_G.autoDecimal and "ON" or "OFF")
+                      var.store("nLuaCAS_decimals_pref", _G.autoDecimal and 1 or 0)
+                      platform.window:invalidate()
+                  end },
 
-        local closeBtnSize = 24
-        local closeX = modalX + modalW - closeBtnSize - 6
-        local closeY = modalY + 6
-        _G.modalCloseBtnRegion = { x = closeX, y = closeY, w = closeBtnSize, h = closeBtnSize }
-        gc:setColorRGB(200, 40, 40)
-        gc:fillRect(closeX, closeY, closeBtnSize, closeBtnSize)
-        gc:setColorRGB(255, 255, 255)
-        gc:setFont("sansserif", "b", 16)
-        local xw = gc:getStringWidth("×")
-        local xh = gc:getStringHeight("×")
-        gc:drawString("×", closeX + (closeBtnSize - xw) / 2, closeY + (closeBtnSize - xh) / 2, "top")
+                -- Complex Mode Toggle
+                { type = "TextLabel", x = labelCol1X, y = 40 + lineHeight, text = "Complex:" },
+                { type = "TextButton", x = valueCol1X, y = 40 + lineHeight - 2, text = (_G.showComplex and "ON" or "OFF"),
+                  width = btnW, height = btnH, name = "complexBtn",
+                  command = function(dlg, btn)
+                      _G.showComplex = not _G.showComplex
+                      btn.text = (_G.showComplex and "ON" or "OFF")
+                      var.store("nLuaCAS_complex_pref", _G.showComplex and 1 or 0)
+                      platform.window:invalidate()
+                  end },
 
-        local labelX = modalX + 10
-        local labelY = modalY + 40
-        local lineHeight = 28
-        local btnW, btnH = 48, 22
+                -- Constants Toggle
+                { type = "TextLabel", x = labelCol1X, y = 40 + 2 * lineHeight, text = "Constants:" },
+                { type = "TextButton", x = valueCol1X, y = 40 + 2 * lineHeight - 2, text = (not var.recall("constants_off") and "ON" or "OFF"),
+                  width = btnW, height = btnH, name = "constantsBtn",
+                  command = function(dlg, btn)
+                      local new_off = not var.recall("constants_off")
+                      var.store("constants_off", new_off)
+                      btn.text = (not new_off and "ON" or "OFF")
+                      platform.window:invalidate()
+                  end },
 
-        gc:setColorRGB(unpackColor(modalText))
-        gc:setFont("sansserif", "r", 12)
+                -- Category Selector
+                { type = "TextLabel", x = labelCol1X, y = 40 + 3 * lineHeight, text = "Category:" },
+                { type = "TextButton", x = valueCol1X, y = 40 + 3 * lineHeight - 2, text = _G.gui.get_current_constant_category(),
+                  width = 90, height = btnH, name = "categoryBtn",
+                  command = function(dlg, btn)
+                      local categories = get_constant_categories()
+                      local currentCategory = _G.gui.get_current_constant_category()
+                      local idx = 1
+                      for i, v in ipairs(categories) do
+                          if v == currentCategory then idx = i end
+                      end
+                      local selected = categories[(idx % #categories) + 1]
 
-        -- Decimals Toggle
-        gc:drawString("Decimals:", labelX, labelY, "top")
-        local btnX = labelX + gc:getStringWidth("Decimals:") + 10
-        local btnY = labelY - 2
-        if not _G.modalETKButton then
-            _G.modalETKButton = Widgets.Button{
-                text = (_G.autoDecimal and "ON" or "OFF"),
-                position = Dimension(btnW, btnH),
-                parent = theView,
-                onAction = function(self)
-                    _G.autoDecimal = not _G.autoDecimal
-                    self.text = (_G.autoDecimal and "ON" or "OFF")
-                    var.store("nLuaCAS_decimals_pref", _G.autoDecimal and 1 or 0)
-                    platform.window:invalidate()
+                      _G.currentConstCategory = selected
+                      _G.current_constant_category = selected
+
+                      var.store("current_constant_category", selected)
+                      btn.text = selected
+
+                      platform.window:invalidate()
+                  end },
+
+                -- Dismiss Button for the dialog
+                -- Position it relative to the new dialog height
+                { type = "TextButton", x = 300 - 70, y = 190 - 30, text = "Dismiss", -- Y-position adjusted for new height
+                  closesDialog = true,
+                  command = function(dlg, btn)
+                  end }
+            },
+            onClose = function(dlg, result)
+                _G.showSettingsModal = false
+                platform.window:invalidate()
+                if fctEditor and fctEditor.editor then -- Add nil check for robustness
+                    fctEditor.editor:setVisible(true)
                 end
-            }
-        end
-        _G.modalETKButton.text = (_G.autoDecimal and "ON" or "OFF")
-        _G.modalETKButton:draw(gc, btnX, btnY, btnW, btnH)
-        -- Complex Mode Toggle
-        local complexLabelY = labelY + lineHeight + 85
-        local complexBtnX = labelX + gc:getStringWidth("Complex:") + 10
-        local complexBtnY = complexLabelY - 2
-
-        gc:drawString("Complex:", labelX, complexLabelY, "top")
-
-        if not _G.complexModeToggleBtn then
-            _G.complexModeToggleBtn = Widgets.Button{
-                text = (_G.showComplex and "ON" or "OFF"),
-                position = Dimension(btnW, btnH),
-                parent = theView,
-                onAction = function(self)
-                    _G.showComplex = not _G.showComplex
-                    var.store("nLuaCAS_complex_pref", _G.showComplex and 1 or 0)
-                    platform.window:invalidate()
-                end
-            }
-        end
-        _G.complexModeToggleBtn.text = (_G.showComplex and "ON" or "OFF")
-        _G.complexModeToggleBtn:draw(gc, complexBtnX, complexBtnY, btnW, btnH)
-
-        -- Precision Input Field (1-digit wide)
-        local precLabelY = labelY + 2 * lineHeight
-        local precFieldX = labelX + gc:getStringWidth("Precision:") + 10
-        local precFieldY = precLabelY - 2
-        local precFieldW = 16
-        local precFieldH = btnH - 8
-        gc:drawString("Precision:", labelX, precLabelY, "top")
-        gc:drawRect(precFieldX, precFieldY, precFieldW, precFieldH)
-        gc:drawString(tostring(var.recall("nLuaCAS_precision_pref") or ""), precFieldX + 3, precFieldY + 1, "top")
-
-        -- Constants Toggle
-        local consLabelY = labelY + lineHeight
-        gc:drawString("Constants:", labelX, consLabelY, "top")
-        local consBtnX = btnX
-        local consBtnY = consLabelY - 2
-        if not _G.constantsToggleBtn then
-            _G.constantsToggleBtn = Widgets.Button{
-                text = (not var.recall("constants_off") and "ON" or "OFF"),
-                position = Dimension(btnW, btnH),
-                parent = theView,
-                onAction = function(self)
-                    local new_off = not var.recall("constants_off")
-                    var.store("constants_off", new_off)
-                    self.text = (not new_off and "ON" or "OFF")
-                    platform.window:invalidate()
-                end
-            }
-        end
-        _G.constantsToggleBtn.text = (not var.recall("constants_off") and "ON" or "OFF")
-        _G.constantsToggleBtn:draw(gc, consBtnX, consBtnY, btnW, btnH)
-
-
-        -- Category Selector
-        local catLabelY = consLabelY + 2 * lineHeight
-        gc:drawString("Category:", labelX, catLabelY, "top")
-        local catBtnX = btnX
-        local catBtnY = catLabelY - 2
-        local categories = get_constant_categories()
-        -- Always sync currentConstCategory to storage at render time
-        if not _G.categoryBtn then
-            local initialCat = gui.get_current_constant_category()
-            _G.currentConstCategory = initialCat
-            _G.current_constant_category = initialCat
-            _G.categoryBtn = Widgets.Button{
-                text = initialCat,
-                position = Dimension(90, btnH),
-                parent = theView,
-                onAction = function(self)
-                    local idx = 1
-                    for i, v in ipairs(categories) do
-                        if v == _G.currentConstCategory then idx = i end
-                    end
-                    local selected = categories[(idx % #categories) + 1]
-                    _G.currentConstCategory = selected
-                    _G.current_constant_category = selected
-
-                    print("[VAR] Saving category:", selected)
-                    var.store("current_constant_category", selected)
-                    print("[VAR] Immediately recalling category:", var.recall("current_constant_category"))
-
-                    self.text = selected
-                    platform.window:invalidate()
-                    print("[STATE] Stored category to storage:", _G.currentConstCategory)
-                end
-            }
-        end
-        _G.categoryBtn.text = _G.currentConstCategory
-        _G.categoryBtn:draw(gc, catBtnX, catBtnY, 90, btnH)
-
-        -- Constants List
-        local listY = catLabelY + lineHeight
-        local avail = var.recall("available_constants") or {}
-        local clist = get_constants_by_category(_G.currentConstCategory)
-
-        for i, name in ipairs(clist) do
-            local cy = listY + (i - 1) * 15
-            local enabled = (avail == nil) or (avail[name] == true)
-            gc:setColorRGB(unpackColor(modalText))
-            gc:drawString((enabled and "[✓] " or "[ ] ") .. name, labelX, cy, "top")
-        end
+            end
+        })
+        theView:add(_G.settingsDialog)
+        _G.settingsDialog:activate()
     end
+    _G.settingsDialog:paint(gc, true)
+end
 
-    -- Help modal overlay
+
     if _G.showHelpModal then
-        local w,h = 300,200
-        local x0,y0 = (scrWidth-w)/2, (scrHeight-h)/2
-        local bg = _G.darkMode and {30,30,30} or {240,240,240}
-        local bd = _G.darkMode and {200,200,200} or {0,0,0}
-        local tc = _G.darkMode and {220,220,220} or {0,0,0}
-        gc:setColorRGB(unpackColor(bg)); gc:fillRect(x0,y0,w,h)
-        gc:setColorRGB(unpackColor(bd)); gc:drawRect(x0,y0,w,h)
-        gc:setColorRGB(unpackColor(tc)); gc:setFont("sansserif","b",14)
-        gc:drawString("CAS Help", x0+10, y0+10, "top")
-        -- Close button
-        local cs=24; local cx,cy = x0+w-cs-6, y0+6
-        _G.helpModalCloseBtnRegion={x=cx,y=cy,w=cs,h=cs}
-        gc:setColorRGB(200,40,40); gc:fillRect(cx,cy,cs,cs)
-        gc:setColorRGB(255,255,255); gc:setFont("sansserif","b",16)
-        local xw=gc:getStringWidth("×"); local xh=gc:getStringHeight("×")
-        gc:drawString("×", cx+(cs-xw)/2, cy+(cs-xh)/2, "top")
-        -- Help text
-        gc:setFont("sansserif","r",12)
-        local lines={
-            "Use Ctrl+MENU to open the menu.",
-            "Arrow keys or touch/click to navigate.",
-            "Select operations to insert into input.",
-            "Press Enter to compute.",
-            "Supports expand, factor, simplify,",
-            "differentiate, integrate, solve, abs,",
-            "factorial, empty matrix, series"
-        }
-        local ty=y0+40
-        for _,l in ipairs(lines) do gc:drawString(l, x0+10, ty, "top"); ty=ty+16 end
+        if not _G.helpDialog then
+            if fctEditor and fctEditor.editor then -- Add nil check for robustness
+                fctEditor.editor:setVisible(false) -- HIDE EDITOR WHEN DIALOG OPENS
+            end
+            _G.helpDialog = Dialog(theView, {
+                title = "CAS Help",
+                width = 300,
+                height = 200,
+                elements = {
+                    { type = "TextLabel", x = 10, y = 40, text = "Use Ctrl+MENU to open the menu." },
+                    { type = "TextLabel", x = 10, y = 56, text = "Arrow keys or touch/click to navigate." },
+                    { type = "TextLabel", x = 10, y = 72, text = "Select operations to insert into input." },
+                    { type = "TextLabel", x = 10, y = 88, text = "Press Enter to compute." },
+                    { type = "TextLabel", x = 10, y = 104, text = "Supports expand, factor, simplify," },
+                    { type = "TextLabel", x = 10, y = 120, text = "differentiate, integrate, solve, abs," },
+                    { type = "TextLabel", x = 10, y = 136, text = "factorial, empty matrix, series" },
+                    { type = "TextButton", x = 300 - 70, y = 200 - 30, text = "Close",
+                      closesDialog = true,
+                      command = function(dlg, btn) end }
+                },
+                onClose = function(dlg, result)
+                _G.showHelpModal = false
+                    platform.window:invalidate()
+                    if fctEditor and fctEditor.editor then -- SHOW EDITOR WHEN DIALOG CLOSES
+                        fctEditor.editor:setVisible(true)
+                    end
+                end
+            })
+            theView:add(_G.helpDialog)
+            _G.helpDialog:activate()
+        end
+        _G.helpDialog:paint(gc, true)
     end
+    
 
-    -- Startup Hint overlay
-    if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
-        local w, h = 240, 90
-        local x0 = (scrWidth - w) / 2
-        local y0 = scrHeight - h - 80
-        local bg = _G.darkMode and {40, 40, 40} or {240, 240, 240}
-        local bd = _G.darkMode and {200, 200, 200} or {0, 0, 0}
-        local tc = _G.darkMode and {220, 220, 220} or {0, 0, 0}
-        gc:setColorRGB(unpackColor(bg)); gc:fillRect(x0, y0, w, h)
-        gc:setColorRGB(unpackColor(bd)); gc:drawRect(x0, y0, w, h)
-        gc:setColorRGB(unpackColor(tc)); gc:setFont("sansserif", "b", 12)
-        gc:drawString("Tip: Press Ctrl+MENU", x0 + 10, y0 + 10, "top")
-        gc:drawString("to open the menu.", x0 + 10, y0 + 26, "top")
-
-        local btnW, btnH = 70, 22
-        local btnX = x0 + w - btnW - 10
-        local btnY = y0 + h - btnH - 10
-        _G.hintDismissBtnRegion = { x = btnX, y = btnY, w = btnW, h = btnH }
-
-        gc:setColorRGB(200, 40, 40)
-        gc:fillRect(btnX, btnY, btnW, btnH)
-        gc:setColorRGB(255, 255, 255)
-        gc:setFont("sansserif", "b", 12)
-        local tw = gc:getStringWidth("Dismiss")
-        local th = gc:getStringHeight("Dismiss")
-        gc:drawString("Dismiss", btnX + (btnW - tw) / 2, btnY + (btnH - th) / 2, "top")
-
-        -- ETK-style "Don't show again" button using Widgets.Button
-        if not _G.startupDontShowBtn then
-            _G.startupDontShowBtn = Widgets.Button{
-                text = "Don't show again",
-                position = Dimension(110, btnH),
-                parent = theView,
-                onAction = function(self)
+   -- Handle the Startup Hint Dialog
+if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
+    if not _G.startupHintDialog then
+        if fctEditor and fctEditor.editor then
+            fctEditor.editor:setVisible(false)
+        end
+        _G.startupHintDialog = Dialog(theView, {
+            title = "Tip",
+            width = 280,
+            height = 160,
+            elements = {
+                { type = "TextLabel", x = 20, y = 40, text = "Press Ctrl+MENU to open the menu." },
+                { type = "TextLabel", x = 20, y = 56, text = "You can access all features from there." },
+                { type = "CheckBox", x = 20, y = 90, text = "Don't show this tip again", checked = false, name = "dontShow",
+                  onAction = function(self)
+                      self.checked = not self.checked
+                      platform.window:invalidate()
+                  end
+                },
+                { type = "TextButton", x = 280 - 70, y = 160 - 30, text = "Dismiss",
+                  closesDialog = true,
+                  command = function(dlg, btn) end }
+            },
+            onClose = function(dlg, result)
+                if dlg.namedWidgets.dontShow and dlg.namedWidgets.dontShow.checked then
                     if var and var.store then
                         var.store("hide_startup_hint", 1)
                     end
-                    _G.showStartupHint = false
-                    platform.window:invalidate()
                 end
-            }
-        end
-        _G.startupDontShowBtn:draw(gc, x0 + 10, btnY, 110, btnH)
+                if fctEditor and fctEditor.editor then
+                    fctEditor.editor:setVisible(true)
+                end
+                _G.showStartupHint = false
+                platform.window:invalidate()
+            end
+        })
+        theView:add(_G.startupHintDialog)
+        _G.startupHintDialog:activate()
     end
+    -- --- START OF CHANGE ---
+    -- Move the paint call OUTSIDE the 'if not _G.startupHintDialog then' block
+    if _G.startupHintDialog and _G.startupHintDialog.visible then -- Ensure it exists and is visible before painting
+        _G.startupHintDialog:paint(gc, true)
+    end
+    -- --- END OF CHANGE ---
+end
 end
 
 font = "sansserif"
@@ -10911,6 +11252,7 @@ _G.var = var
 
 function on.construction()
   setupLaunchAnimation()
+  toolpalette.register(myToolPaletteMenuStructure)
 end
 function on.timer()
     if showLaunchAnim then
@@ -10936,6 +11278,6 @@ end
 
 -- End src/gui.lua
 
--- src/gui.lua makes your code richer. Or at least gout-ridden.
+-- Imported src/gui.lua—debuggers rejoice.
 
--- Build wrapping up. build.lua makes your code richer. Or at least gout-ridden.
+-- Build wrapping up. Imported build.lua—debuggers rejoice.
