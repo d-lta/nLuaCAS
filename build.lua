@@ -327,7 +327,7 @@ _G.handleIntegralError = handleIntegralError
 
 -- End src/errors.lua
 
--- Imported src/errors.lua—debuggers rejoice.
+-- You included src/errors.lua—brace for unexpected side effects.
 
 -- Begin src/ast.lua
 
@@ -902,7 +902,7 @@ end
 
 -- End src/ast.lua
 
--- src/ast.lua makes your code richer. Or at least gout-ridden.
+-- Imported src/ast.lua—debuggers rejoice.
 
 -- Begin src/parser.lua
 -- parser.lua: Because writing your own parser is the best way to avoid happiness.
@@ -1323,7 +1323,7 @@ local function parse_primary(tokens, idx)
         }, ni4 + 1
       end
       
-      -- Debug version of your limit parsing logic
+      -- Debug version of the limit parsing logic
       if tok.value == "lim" then
         -- Parse lim(expr, var, to, direction) format
         print("DEBUG: Starting lim parse")
@@ -1380,7 +1380,7 @@ local function parse_primary(tokens, idx)
         print("DEBUG: var = '" .. var_token.value .. "'")
         print("DEBUG: to_str = '" .. to_str .. "'")
         
-        -- Call your beautiful limit function
+        -- Call the beautiful limit function
         local ok, result = pcall(_G.lim, expr_str, var_token.value, to_str, direction)
         if not ok then
           print("DEBUG: _G.lim failed with: " .. tostring(result))
@@ -1908,7 +1908,7 @@ end
 
 -- End src/parser.lua
 
--- Merged src/parser.lua: pray those ASTs behave.
+-- src/parser.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/factorial.lua
 -- factorial.lua
@@ -2018,7 +2018,7 @@ _G.evaluateFactorial = evaluateFactorial  -- Expose evaluateFactorial globally
 
 -- End src/factorial.lua
 
--- src/factorial.lua has arrived. Prepare to blame someone.
+-- Merged src/factorial.lua: pray those ASTs behave.
 
 -- Begin src/simplify.lua
 local simplify = {}
@@ -2282,7 +2282,7 @@ end
 -- ===== STEP 3: CONSTANT FOLDING (The Easy Wins) =====
 
 -- fold_constants: The Elegant Edition
--- Because your original was apparently written by someone who thinks math is optional
+
 
 local function fold_constants(expr)
     if not expr or type(expr) ~= "table" then return expr end
@@ -2350,7 +2350,7 @@ local function fold_constants(expr)
         return { type = "add", args = result_terms }
     end
 
-    -- Handle multiplication: the source of your discriminant trauma
+    -- Handle multiplication: the source of discriminant trauma
     if expr.type == "mul" and expr.args then
         local numeric_product = 1
         local non_numeric_factors = {}
@@ -2399,7 +2399,7 @@ local function fold_constants(expr)
         return { type = "mul", args = result_factors }
     end
 
-    -- Handle subtraction: where your quadratic dreams go to die
+    -- Handle subtraction: where quadratic dreams go to die
     if expr.type == "sub" and expr.left and expr.right then
         local left = fold_constants(expr.left)
         local right = fold_constants(expr.right)
@@ -2457,7 +2457,7 @@ local function fold_constants(expr)
         return { type = "div", left = left, right = right }
     end
 
-    -- Handle powers: because your quadratic formula demands it
+    -- Handle powers: because the quadratic formula demands it
     if expr.type == "pow" then
         local base = fold_constants(expr.base or expr.left)
         local exp = fold_constants(expr.exp or expr.right)
@@ -3591,7 +3591,7 @@ _G.simplify = simplify
 
 -- End src/simplify.lua
 
--- src/simplify.lua makes your code richer. Or at least gout-ridden.
+-- Integrated src/simplify.lua: let’s hope it compiles this time.
 
 -- Begin src/tensor.lua
 local ast = _G.ast or error("AST module required")
@@ -3995,7 +3995,7 @@ _G.Tensor = Tensor
 
 -- End src/tensor.lua
 
--- Glued in src/tensor.lua. Now question why you needed it.
+-- src/tensor.lua has arrived. Prepare to blame someone.
 
 -- Begin src/trig.lua
 -- trig.lua
@@ -4072,7 +4072,7 @@ _G.trig = {
 
 -- End src/trig.lua
 
--- You included src/trig.lua—brace for unexpected side effects.
+-- Tossed src/trig.lua in here—go ahead, run your tests.
 
 -- Begin src/derivative.lua
 -- Derivative Engine with Mathematical Solution Steps
@@ -4600,7 +4600,7 @@ _G.diffAST = diffAST
 
 -- End src/derivative.lua
 
--- src/derivative.lua makes your code richer. Or at least gout-ridden.
+-- You included src/derivative.lua—brace for unexpected side effects.
 
 -- Begin src/integrate.lua
 -- Integral Engine (Enhanced Edition with Step-by-Step Mathematical Solutions)
@@ -5795,7 +5795,7 @@ _G.integrateAST = integrateAST
 
 -- End src/integrate.lua
 
--- Merged src/integrate.lua: pray those ASTs behave.
+-- Glued in src/integrate.lua. Now question why you needed it.
 
 -- Begin src/constants.lua
 local errors = _G.errors
@@ -7324,7 +7324,7 @@ local function eval_physics_func(fname, args)
     return nil -- fallback to symbolic
 end
 
--- Symbolic differentiation delegated fully to your diffAST engine because why reinvent the wheel
+-- Symbolic differentiation delegated fully to the diffAST engine because why reinvent the wheel
 local function diff_physics_func(fname, arg, darg)
     -- Simply return the symbolic function node and let diffAST handle it
     return ast.func(fname, {arg})
@@ -7349,7 +7349,7 @@ _G.physics = {
 
 -- End src/constants.lua
 
--- src/constants.lua has arrived. Prepare to blame someone.
+-- You included src/constants.lua—brace for unexpected side effects.
 
 -- Begin src/series.lua
 -- series.lua: Because infinite sums make us feel clever.
@@ -7468,7 +7468,7 @@ _G.series = series
 
 -- End src/series.lua
 
--- src/series.lua is in; don’t let that parser bite you later.
+-- You included src/series.lua—brace for unexpected side effects.
 
 -- Begin src/solve.lua
 -- solve.lua - Now with 50% less mathematical masturbation
@@ -8961,7 +8961,7 @@ _G.filterSteps = filterSteps
 
 -- End src/solve.lua
 
--- src/solve.lua has arrived. Prepare to blame someone.
+-- Imported src/solve.lua—debuggers rejoice.
 
 -- Begin src/init.lua
 platform.apilevel = "2.4"
@@ -9029,7 +9029,7 @@ end
 -- REMOVED: local os = os -- For performance timing/sleep if needed
 
 -- Define the graphing window (world coordinates)
--- These can be made configurable via UI in your main app file.
+
 local x_min_world = -10
 local x_max_world = 10
 local y_min_world = -10
@@ -9246,7 +9246,7 @@ _G.graph_state = {
 
 -- End src/graph.lua
 
--- src/graph.lua makes your code richer. Or at least gout-ridden.
+-- src/graph.lua is in; don’t let that parser bite you later.
 
 -- Begin src/gui.lua
 
@@ -10561,7 +10561,7 @@ function Dialog:addWidget(widget)
     self.view:repos(widget)   -- This might not be necessary anymore, but let's leave it.
 end
 
--- In your Dialog = class(Widget) definition:
+
 
 -- Activates the dialog, making it visible and focusable.
 function Dialog:activate()
@@ -10616,7 +10616,7 @@ function Dialog:activate()
     end
     self.view:invalidate() -- Request a screen redraw
 end
--- In your Dialog = class(Widget) definition:
+
 
 -- Closes the dialog, making it invisible and removing its widgets from the view.
 function Dialog:close(result)
@@ -10675,7 +10675,6 @@ function Dialog:close(result)
     self.view:invalidate()
 end
 
--- In your Dialog class definition (e.g., in gui.lua or dialog.lua)
 
 -- Corrected Dialog:onMouseDown
 function Dialog:onMouseDown(x, y)
@@ -10736,7 +10735,7 @@ end
 
 ---
 -- Draws the content for a specific page.
--- In your Dialog class definition...
+
 function Dialog:updatePage(pageNumber)
     self.currentPage = pageNumber
 
@@ -11676,7 +11675,6 @@ function Dialog:addWidget(widget)
     self.view:repos(widget) -- Reposition in case constraints are set
 end
 
--- In your Dialog = class(Widget) definition:
 
 -- Activates the dialog, making it visible and focusable.
 function Dialog:activate()
@@ -11731,7 +11729,7 @@ function Dialog:activate()
     end
     self.view:invalidate() -- Request a screen redraw
 end
--- In your Dialog = class(Widget) definition:
+
 
 -- Closes the dialog, making it invisible and removing its widgets from the view.
 function Dialog:close(result)
@@ -11909,7 +11907,7 @@ function on.mouseUp(x, y)
     if _G.showHelpModal then
         if not _G.helpDialog then
             -- Create the help dialog only once
-            -- ... (your existing dialog creation code, without _G.helpDialog:paint) ...
+           
 
             -- Ensure it's added to the view and activated when created
             theView:add(_G.helpDialog)
@@ -11922,7 +11920,7 @@ function on.mouseUp(x, y)
     if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
         if not _G.startupHintDialog then
             -- Create the startup hint dialog only once
-            -- ... (your existing dialog creation code, without _G.startupHintDialog:paint) ...
+            
 
             -- Ensure it's added to the view and activated when created
             theView:add(_G.startupHintDialog)
@@ -12427,7 +12425,7 @@ end
     if _G.showGraphingModal then
             if not _G.graphingDialog then
                 -- Define base positions for elements relative to the dialog's top-left corner (0,0)
-                -- (These can be adjusted to fit your preferences)
+                
                 local labelColX = 10
                 local inputColX = 90
                 local inputWidth = 200
@@ -13000,6 +12998,6 @@ toolpalette.register(myToolPaletteMenuStructure)
 
 -- End src/gui.lua
 
--- You included src/gui.lua—brace for unexpected side effects.
+-- Tossed src/gui.lua in here—go ahead, run your tests.
 
--- Build wrapping up. build.lua has arrived. Prepare to blame someone.
+-- Build wrapping up. Merged build.lua: pray those ASTs behave.

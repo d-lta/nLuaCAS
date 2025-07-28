@@ -287,7 +287,7 @@ function _G.errors.throw_clean(key, ...)
     end
 end
 
--- Helper functions (preserved from your original)
+-- Helper functions 
 function handleParseError(context)
   if context == "series" then
     _G.errors.throw("parse(series)")
@@ -327,7 +327,7 @@ _G.handleIntegralError = handleIntegralError
 
 -- End src/errors.lua
 
--- src/errors.lua makes your code richer. Or at least gout-ridden.
+-- Imported src/errors.lua—debuggers rejoice.
 
 -- Begin src/ast.lua
 
@@ -902,7 +902,7 @@ end
 
 -- End src/ast.lua
 
--- You included src/ast.lua—brace for unexpected side effects.
+-- src/ast.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/parser.lua
 -- parser.lua: Because writing your own parser is the best way to avoid happiness.
@@ -1908,7 +1908,7 @@ end
 
 -- End src/parser.lua
 
--- Glued in src/parser.lua. Now question why you needed it.
+-- Merged src/parser.lua: pray those ASTs behave.
 
 -- Begin src/factorial.lua
 -- factorial.lua
@@ -2018,7 +2018,7 @@ _G.evaluateFactorial = evaluateFactorial  -- Expose evaluateFactorial globally
 
 -- End src/factorial.lua
 
--- Glued in src/factorial.lua. Now question why you needed it.
+-- src/factorial.lua has arrived. Prepare to blame someone.
 
 -- Begin src/simplify.lua
 local simplify = {}
@@ -3591,7 +3591,7 @@ _G.simplify = simplify
 
 -- End src/simplify.lua
 
--- Imported src/simplify.lua—debuggers rejoice.
+-- src/simplify.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/tensor.lua
 local ast = _G.ast or error("AST module required")
@@ -3995,7 +3995,7 @@ _G.Tensor = Tensor
 
 -- End src/tensor.lua
 
--- Integrated src/tensor.lua: let’s hope it compiles this time.
+-- Glued in src/tensor.lua. Now question why you needed it.
 
 -- Begin src/trig.lua
 -- trig.lua
@@ -4072,7 +4072,7 @@ _G.trig = {
 
 -- End src/trig.lua
 
--- src/trig.lua has arrived. Prepare to blame someone.
+-- You included src/trig.lua—brace for unexpected side effects.
 
 -- Begin src/derivative.lua
 -- Derivative Engine with Mathematical Solution Steps
@@ -4600,7 +4600,7 @@ _G.diffAST = diffAST
 
 -- End src/derivative.lua
 
--- src/derivative.lua has arrived. Prepare to blame someone.
+-- src/derivative.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/integrate.lua
 -- Integral Engine (Enhanced Edition with Step-by-Step Mathematical Solutions)
@@ -5795,7 +5795,7 @@ _G.integrateAST = integrateAST
 
 -- End src/integrate.lua
 
--- Tossed src/integrate.lua in here—go ahead, run your tests.
+-- Merged src/integrate.lua: pray those ASTs behave.
 
 -- Begin src/constants.lua
 local errors = _G.errors
@@ -7349,7 +7349,7 @@ _G.physics = {
 
 -- End src/constants.lua
 
--- You included src/constants.lua—brace for unexpected side effects.
+-- src/constants.lua has arrived. Prepare to blame someone.
 
 -- Begin src/series.lua
 -- series.lua: Because infinite sums make us feel clever.
@@ -7468,7 +7468,7 @@ _G.series = series
 
 -- End src/series.lua
 
--- Just added src/series.lua—hope your logic is watertight.
+-- src/series.lua is in; don’t let that parser bite you later.
 
 -- Begin src/solve.lua
 -- solve.lua - Now with 50% less mathematical masturbation
@@ -8961,7 +8961,7 @@ _G.filterSteps = filterSteps
 
 -- End src/solve.lua
 
--- src/solve.lua is in; don’t let that parser bite you later.
+-- src/solve.lua has arrived. Prepare to blame someone.
 
 -- Begin src/init.lua
 platform.apilevel = "2.4"
@@ -9009,7 +9009,7 @@ end
 
 -- End src/init.lua
 
--- src/init.lua has arrived. Prepare to blame someone.
+-- Imported src/init.lua—debuggers rejoice.
 
 -- Begin src/graph.lua
 -- graph.lua
@@ -9246,7 +9246,7 @@ _G.graph_state = {
 
 -- End src/graph.lua
 
--- Merged src/graph.lua: pray those ASTs behave.
+-- src/graph.lua makes your code richer. Or at least gout-ridden.
 
 -- Begin src/gui.lua
 
@@ -9307,26 +9307,28 @@ function showCalculationExplanation(steps, originalExpr, calculationType)
     end
 
     -- --- Dialog Size Configuration ---
-    -- Tune these values to change the dialog's size.
-    local itemsPerPage = 5
-    local dialogWidth = 480   -- A bit narrower than before.
-    local lineHeight = 18     -- Height for one line in the steps list.
-    local topSectionHeight = 70 -- Space for title bar and the "Step-by-step of:" header.
-    local navSectionHeight = 45 -- Space for the "Prev / Page X of Y / Next" navigation row.
-    local bottomPadding = 40  -- Space for the "Got it!" button and padding below it.
+    local itemsPerPage = 4      -- As requested.
+    local dialogWidth = 300     -- Increased width to better fit 4 items.
+    local lineHeight = 18       -- A readable height for a line of text.
+    local topSectionHeight = 60 -- Space for title bar and header text.
+    local footerHeight = 40     -- The vertical space reserved for the bottom row of controls.
 
     -- Calculate total height based on a full page of items.
     local contentHeight = itemsPerPage * lineHeight
-    local dialogHeight = topSectionHeight + contentHeight + navSectionHeight + bottomPadding
+    local dialogHeight = topSectionHeight + contentHeight + footerHeight
     -- --- End of Configuration ---
 
+    -- --- Button and Control Layout ---
+    local footerControlsY = dialogHeight - footerHeight + 10 -- The Y-coordinate for ALL bottom buttons.
+    local gotItButtonWidth = 80
+    local gotItButtonX = dialogWidth - gotItButtonWidth - 20 -- Position on the bottom-right.
 
     -- Initial elements (the static parts of the dialog).
     local staticElements = {
         { type = "TextLabel", x = 20, y = 20, text = "Step-by-step " .. (calculationType or "Calculation") .. " of:" },
         { type = "TextLabel", x = 20, y = 40, text = originalExpr },
-        -- The "Got it!" button's position is now calculated based on the variables above.
-        { type = "TextButton", text = "Got it!", closesDialog = true, x = (dialogWidth - 100) / 2, y = dialogHeight - bottomPadding }
+        -- The "Got it!" button is now placed according to our new layout variables.
+        { type = "TextButton", text = "Got it!", closesDialog = true, x = gotItButtonX, y = footerControlsY, width = gotItButtonWidth }
     }
 
     -- Create the Dialog Instance
@@ -9346,11 +9348,10 @@ function showCalculationExplanation(steps, originalExpr, calculationType)
     dialog.steps = steps
     dialog.itemsPerPage = itemsPerPage
     dialog.totalPages = math.ceil(#steps / itemsPerPage)
-    dialog.currentPage = 0 -- Will be set to 1 by updatePage
-
-    -- Adjust where the dynamic content starts drawing from.
-    -- This MUST match the `topSectionHeight` variable.
+    dialog.currentPage = 0
     dialog.contentStartY = topSectionHeight
+    -- Pass the calculated footer Y position to the dialog so updatePage can use it.
+    dialog.footerControlsY = footerControlsY
 
     -- Initial call to draw the first page
     dialog:updatePage(1)
@@ -10735,8 +10736,7 @@ end
 
 ---
 -- Draws the content for a specific page.
--- This will clear the old content first, then build the new page.
--- @param pageNumber The page number to render.
+-- In your Dialog class definition...
 function Dialog:updatePage(pageNumber)
     self.currentPage = pageNumber
 
@@ -10746,8 +10746,7 @@ function Dialog:updatePage(pageNumber)
     -- Some constants for layout.
     local contentPaddingX = 20
     local lineHeight = 18
-    local buttonWidth = 80
-    local currentY = 70 -- Starting Y for the list of steps
+    local currentY = self.contentStartY -- Use the value set in the other function.
 
     -- 2. ADD THE NEW CONTENT (the steps for this page)
     local startIndex = (self.currentPage - 1) * self.itemsPerPage + 1
@@ -10755,38 +10754,40 @@ function Dialog:updatePage(pageNumber)
 
     for i = startIndex, endIndex do
         local stepLabel = TextLabel(self.view, contentPaddingX, currentY, string.format("%d. %s", i, self.steps[i].description))
-        stepLabel.isPageContent = true -- Mark for future execution.
+        stepLabel.isPageContent = true
         self:addWidget(stepLabel)
         currentY = currentY + lineHeight
     end
 
-    currentY = currentY + 25 -- Padding before buttons
-
-    -- 3. ADD THE NAVIGATION CONTROLS (which are also page content)
-    local navY = currentY
+    -- 3. ADD THE NAVIGATION CONTROLS (at the bottom)
+    local navY = self.footerControlsY -- Use the pre-calculated Y position for vertical alignment.
+    local currentX = contentPaddingX  -- Start drawing from the left.
 
     -- "Previous" Button
     if self.currentPage > 1 then
-        local prevBtn = TextButton(self.view, contentPaddingX, navY, "< Prev", function() self:updatePage(self.currentPage - 1) end)
+        local prevBtn = TextButton(self.view, currentX, navY, "< Prev", function() self:updatePage(self.currentPage - 1) end)
         prevBtn.isPageContent = true
         self:addWidget(prevBtn)
+        currentX = currentX + prevBtn.w + 15 -- Move X for the next element
     end
 
-    -- Page Indicator Label
-    local pageIndicator = string.format("Page %d of %d", self.currentPage, self.totalPages)
-    local pageIndicatorWidth = getStringWidth(pageIndicator) -- Your helper function
-    local pageLabel = TextLabel(self.view, (self.w - pageIndicatorWidth) / 2, navY + 4, pageIndicator)
-    pageLabel.isPageContent = true
-    self:addWidget(pageLabel)
+    -- Page Indicator Label (only if there's more than one page)
+    if self.totalPages > 1 then
+        local pageIndicator = string.format("Page %d of %d", self.currentPage, self.totalPages)
+        local pageLabel = TextLabel(self.view, currentX, navY + 4, pageIndicator) -- +4 for text alignment
+        pageLabel.isPageContent = true
+        self:addWidget(pageLabel)
+        currentX = currentX + getStringWidth(pageIndicator) + 15
+    end
 
     -- "Next" Button
     if self.currentPage < self.totalPages then
-        local nextBtn = TextButton(self.view, self.w - contentPaddingX - buttonWidth, navY, "Next >", function() self:updatePage(self.currentPage + 1) end)
+        local nextBtn = TextButton(self.view, currentX, navY, "Next >", function() self:updatePage(self.currentPage + 1) end)
         nextBtn.isPageContent = true
         self:addWidget(nextBtn)
     end
     
-    self.view:invalidate() -- Redraw the screen with the new content.
+    self.view:invalidate()
 end
 -- Handles the Escape key press for the dialog (if acceptsEscape is true).
 function Dialog:escapeHandler()
@@ -13001,4 +13002,4 @@ toolpalette.register(myToolPaletteMenuStructure)
 
 -- You included src/gui.lua—brace for unexpected side effects.
 
--- Build wrapping up. Imported build.lua—debuggers rejoice.
+-- Build wrapping up. build.lua has arrived. Prepare to blame someone.
