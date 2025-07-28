@@ -60,7 +60,6 @@ CLOSING_MSGS=(
 
 # List of source Lua files
 FILES=(
-  "src/exact.lua"       # core exact number system first
 "src/errors.lua"      # utility early
 "src/ast.lua"         # core AST definitions
 "src/parser.lua"      # depends on ast, errors
@@ -73,7 +72,9 @@ FILES=(
 "src/constants.lua"   # depends on ast, exact
 "src/series.lua"      # depends on ast, simplify, exact
 "src/solve.lua"       # depends on ast, simplify, exact, factorial
-"src/init.lua"        # main entry, depends on everything loaded
+"src/init.lua"
+        
+"src/graph.lua"
 "src/gui.lua"         # UI, depends on everything loaded
 )
 

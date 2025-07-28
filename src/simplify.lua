@@ -259,7 +259,7 @@ end
 -- ===== STEP 3: CONSTANT FOLDING (The Easy Wins) =====
 
 -- fold_constants: The Elegant Edition
--- Because your original was apparently written by someone who thinks math is optional
+
 
 local function fold_constants(expr)
     if not expr or type(expr) ~= "table" then return expr end
@@ -327,7 +327,7 @@ local function fold_constants(expr)
         return { type = "add", args = result_terms }
     end
 
-    -- Handle multiplication: the source of your discriminant trauma
+    -- Handle multiplication: the source of discriminant trauma
     if expr.type == "mul" and expr.args then
         local numeric_product = 1
         local non_numeric_factors = {}
@@ -376,7 +376,7 @@ local function fold_constants(expr)
         return { type = "mul", args = result_factors }
     end
 
-    -- Handle subtraction: where your quadratic dreams go to die
+    -- Handle subtraction: where quadratic dreams go to die
     if expr.type == "sub" and expr.left and expr.right then
         local left = fold_constants(expr.left)
         local right = fold_constants(expr.right)
@@ -434,7 +434,7 @@ local function fold_constants(expr)
         return { type = "div", left = left, right = right }
     end
 
-    -- Handle powers: because your quadratic formula demands it
+    -- Handle powers: because the quadratic formula demands it
     if expr.type == "pow" then
         local base = fold_constants(expr.base or expr.left)
         local exp = fold_constants(expr.exp or expr.right)

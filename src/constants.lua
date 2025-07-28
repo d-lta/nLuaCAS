@@ -1524,7 +1524,7 @@ local function eval_physics_func(fname, args)
     return nil -- fallback to symbolic
 end
 
--- Symbolic differentiation delegated fully to your diffAST engine because why reinvent the wheel
+-- Symbolic differentiation delegated fully to the diffAST engine because why reinvent the wheel
 local function diff_physics_func(fname, arg, darg)
     -- Simply return the symbolic function node and let diffAST handle it
     return ast.func(fname, {arg})

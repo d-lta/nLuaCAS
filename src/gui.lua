@@ -1,14 +1,122 @@
+
 _G.darkMode = (var.recall("dark_mode") == 1)
 _G.showLaunchAnimation = (var.recall("nLuaCAS_launch_anim_pref") == 1)
+-- Utility function to wrap text within a given width.
+-- Requires a gc object for text measurement.
+local function wrapText(gc_obj, text, maxWidth, font_serif, font_style, font_size)
+    local lines = {}
+    local currentLine = ""
+    
+    -- Ensure the font is set for accurate measurement within this GC context
+    gc_obj:setFont(font_serif, font_style, font_size) 
 
+    -- Split the text into "words" (sequences of non-whitespace characters)
+    -- This handles multiple spaces gracefully and avoids empty "words".
+    local words = {}
+    for word in text:gmatch("[^%s]+") do
+        table.insert(words, word)
+    end
+
+    for _, word in ipairs(words) do
+        local testLine = currentLine .. (currentLine ~= "" and " " or "") .. word
+        -- Check if adding the next word (with a space) exceeds maxWidth
+        if gc_obj:getStringWidth(testLine) <= maxWidth then
+            currentLine = testLine
+        else
+            -- If current line is not empty, add it to lines and start a new line with the current word.
+            if currentLine ~= "" then
+                table.insert(lines, currentLine)
+            end
+            currentLine = word
+            -- Important: if a single word is *itself* wider than maxWidth, it will still exceed.
+            -- For truly strict wrapping (e.g., for very long URLs), you'd need character-by-character breaking,
+            -- but for general descriptions, word-wrap is usually sufficient.
+        end
+    end
+    -- Add any remaining text in currentLine
+    if currentLine ~= "" then
+        table.insert(lines, currentLine)
+    end
+    return lines
+end
+_G.explanationDialog = nil 
+-- In gui.lua
+
+-- Make explanationDialog global for proper rendering order management in on.paint
+_G.explanationDialog = nil 
+function showCalculationExplanation(steps, originalExpr, calculationType)
+    if not steps or #steps == 0 then
+        print("[DEBUG] No steps to show!")
+        return
+    end
+
+    if _G.explanationDialog then
+        _G.explanationDialog:close(false)
+        _G.explanationDialog = nil
+    end
+
+    -- --- Dialog Size Configuration ---
+    local itemsPerPage = 4      -- As requested.
+    local dialogWidth = 300     -- Increased width to better fit 4 items.
+    local lineHeight = 18       -- A readable height for a line of text.
+    local topSectionHeight = 60 -- Space for title bar and header text.
+    local footerHeight = 40     -- The vertical space reserved for the bottom row of controls.
+
+    -- Calculate total height based on a full page of items.
+    local contentHeight = itemsPerPage * lineHeight
+    local dialogHeight = topSectionHeight + contentHeight + footerHeight
+    -- --- End of Configuration ---
+
+    -- --- Button and Control Layout ---
+    local footerControlsY = dialogHeight - footerHeight + 10 -- The Y-coordinate for ALL bottom buttons.
+    local gotItButtonWidth = 80
+    local gotItButtonX = dialogWidth - gotItButtonWidth - 20 -- Position on the bottom-right.
+
+    -- Initial elements (the static parts of the dialog).
+    local staticElements = {
+        { type = "TextLabel", x = 20, y = 20, text = "Step-by-step " .. (calculationType or "Calculation") .. " of:" },
+        { type = "TextLabel", x = 20, y = 40, text = originalExpr },
+        -- The "Got it!" button is now placed according to our new layout variables.
+        { type = "TextButton", text = "Got it!", closesDialog = true, x = gotItButtonX, y = footerControlsY, width = gotItButtonWidth }
+    }
+
+    -- Create the Dialog Instance
+    _G.explanationDialog = Dialog(theView, {
+        title = (calculationType or "Calculation") .. " Explanation",
+        width = dialogWidth,
+        height = dialogHeight,
+        elements = staticElements,
+        onClose = function(dlg, result)
+            _G.explanationDialog = nil
+            theView:invalidate()
+        end
+    })
+
+    -- Attach pagination data to the dialog instance
+    local dialog = _G.explanationDialog
+    dialog.steps = steps
+    dialog.itemsPerPage = itemsPerPage
+    dialog.totalPages = math.ceil(#steps / itemsPerPage)
+    dialog.currentPage = 0
+    dialog.contentStartY = topSectionHeight
+    -- Pass the calculated footer Y position to the dialog so updatePage can use it.
+    dialog.footerControlsY = footerControlsY
+
+    -- Initial call to draw the first page
+    dialog:updatePage(1)
+
+    -- Add the dialog to the view and activate it
+    theView:add(dialog)
+    dialog:activate()
+end
 function getStringWidth(text)
     return platform.withGC(function(gc) return gc:getStringWidth(text) end, text)
 end
 _G.precisionInputActive = false
 _G.showComplex = (var.recall("nLuaCAS_complex_pref") == 1)
 -- Launch animation globals
-local n_logo = image.new(_R.IMG.n_logo)
-local luacas_text = image.new(_R.IMG.luacas_text)
+n_logo = image.new(_R.IMG.n_logo)
+luacas_text = image.new(_R.IMG.luacas_text)
 local scaleFactorLogo = 0.1 -- Adjusted smaller n logo
 local scaleFactorText = 0.035 -- Adjusted smaller LuaCAS text to match n height
 local nW, nH = image.width(n_logo) * scaleFactorLogo, image.height(n_logo) * scaleFactorLogo
@@ -61,13 +169,13 @@ function setupLaunchAnimation()
 end
 var = var or {}
 var.store = var.store or {}
-local parser = rawget(_G, "parser")
+parser = rawget(_G, "parser")
 if not parser or not parser.parse then
   error("parser module or parser.parse not defined — ensure parser.lua is loaded before gui.lua")
 end
-local parse = parser.parse
-local simplify = rawget(_G, "simplify")
-local errors = _G.errors
+parse = parser.parse
+simplify = rawget(_G, "simplify")
+ errors = _G.errors
 
 -- Ensure getLocaleText exists, fallback to identity
 local getLocaleText = rawget(_G, "getLocaleText") or function(key) return key end
@@ -76,6 +184,7 @@ _G.autoDecimal = false
 _G.settingsBtnRegion = {x = 0, y = 0, w = 32, h = 32}
 -- Modal flag for settings
 _G.showSettingsModal = false
+_G.showGraphingModal = false
 _G.showHelpModal = false
 _G.showStartupHint = true
 if var and var.recall and var.recall("hide_startup_hint") == 1 then
@@ -1085,18 +1194,13 @@ end
 
 -- --- START OF CHANGE ---
 -- Renamed from CheckBox:mouseDown to CheckBox:onMouseUp
-function CheckBox:onMouseUp(x, y)
-    print("CheckBox:onMouseUp called for:", self.text)
-    print("Received x:", x, " type:", type(x))
-    print("Received y:", y, " type:", type(y))
-    print("Before toggle, checked:", self.checked)
-    self.checked = not self.checked
-    print("After toggle, checked:", self.checked)
-    self.view:invalidate()
-    print("View invalidated.")
+function CheckBox:onMouseUp(relX, relY, releasedInside)
+    if releasedInside then
+        self.checked = not self.checked
+        self.view:invalidate()
+    end
 end
 -- --- END OF CHANGE ---
-
 -- Dialog base class, inheriting from Widget
 Dialog = class(Widget)
 function Dialog:init(view, config)
@@ -1193,19 +1297,64 @@ end
 function Dialog:addWidget(widget)
     table.insert(self.widgets, widget)
     widget.parent = self -- Set the dialog as the widget's parent
+    
     -- Adjust widget's position to be relative to the dialog's top-left corner
-    -- assuming widget.xOrig and widget.yOrig store initial offsets from dialog
     widget.x = self.x + widget.xOrig
     widget.y = self.y + widget.yOrig
-    self.view:add(widget)     -- Crucial: Add the child widget to the main view for event handling
-    self.view:repos(widget)   -- Ask the view to reposition it if necessary (e.g., for layout constraints)
+    
+    -- THIS IS THE LINE CAUSING THE CONFLICT. REMOVE OR COMMENT IT OUT.
+    -- By removing this, we make the Dialog the exclusive parent. The main view
+    -- will no longer know about the individual child widgets, only the Dialog.
+    -- self.view:add(widget)     
+    
+    self.view:repos(widget)   -- This might not be necessary anymore, but let's leave it.
 end
+
+
 
 -- Activates the dialog, making it visible and focusable.
 function Dialog:activate()
     self.visible = true
     -- Set this dialog as the active modal dialog for the view
-    self.view.activeModalDialog = self -- ADD THIS LINE
+    self.view.activeModalDialog = self
+
+    print("--- [DEBUG] Dialog:activate() - Attempting to hide all MathEditors ---")
+
+    -- HIDE MAIN INPUT EDITOR
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(false)
+        print("[DEBUG] Hidden fctEditor (main input editor).")
+    else
+        print("[DEBUG] fctEditor or its editor is NIL/invalid during Dialog:activate.")
+    end
+
+    -- HIDE HISTORY INPUT EDITORS
+    local hidden_hist1_count = 0
+    for i, me in ipairs(histME1) do
+        if me and me.editor then
+            me.editor:setVisible(false)
+            -- Optional: Uncomment for extreme verbosity, might spam console for long history
+            -- print("[DEBUG] Hidden histME1[" .. i .. "] editor (input): " .. (me.editor:getText() or "N/A"))
+            hidden_hist1_count = hidden_hist1_count + 1
+        else
+            print("[DEBUG] histME1[" .. i .. "] is NIL/invalid during Dialog:activate.")
+        end
+    end
+    print("[DEBUG] Total hidden histME1 editors:", hidden_hist1_count, "/", #histME1)
+
+    -- HIDE HISTORY RESULT EDITORS
+    local hidden_hist2_count = 0
+    for i, me in ipairs(histME2) do
+        if me and me.editor then
+            me.editor:setVisible(false)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Hidden histME2[" .. i .. "] editor (result): " .. (me.editor:getText() or "N/A"))
+            hidden_hist2_count = hidden_hist2_count + 1
+        else
+            print("[DEBUG] histME2[" .. i .. "] is NIL/invalid during Dialog:activate.")
+        end
+    end
+    print("[DEBUG] Total hidden histME2 editors:", hidden_hist2_count, "/", #histME2)
 
     -- Set focus to the first focusable widget within the dialog (for keyboard nav)
     for _, widget in ipairs(self.widgets) do
@@ -1217,24 +1366,64 @@ function Dialog:activate()
     self.view:invalidate() -- Request a screen redraw
 end
 
+
 -- Closes the dialog, making it invisible and removing its widgets from the view.
 function Dialog:close(result)
     self.result = result
     self.visible = false
-    -- Remove the dialog itself from the main view's tracking
+    if self.view.activeModalDialog == self then
+        self.view.activeModalDialog = nil
+    end
+
     self.view:remove(self)
-    -- Remove all child widgets from the main view's tracking
     for _, widget in ipairs(self.widgets) do
         self.view:remove(widget)
     end
-    -- Call the custom onClose callback function if provided
     if self.onClose then
         self.onClose(self, result)
     end
-    self.view:invalidate() -- Request a screen redraw
+
+    print("--- [DEBUG] Dialog:close() - Attempting to show all MathEditors ---")
+
+    -- SHOW MAIN INPUT EDITOR
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(true)
+        print("[DEBUG] Shown fctEditor (main input editor).")
+    else
+        print("[DEBUG] fctEditor or its editor is NIL/invalid during Dialog:close.")
+    end
+
+    -- SHOW HISTORY INPUT EDITORS
+    local shown_hist1_count = 0
+    for i, me in ipairs(histME1) do
+        if me and me.editor then
+            me.editor:setVisible(true)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Shown histME1[" .. i .. "] editor (input): " .. (me.editor:getText() or "N/A"))
+            shown_hist1_count = shown_hist1_count + 1
+        else
+            print("[DEBUG] histME1[" .. i .. "] is NIL/invalid during Dialog:close.")
+        end
+    end
+    print("[DEBUG] Total shown histME1 editors:", shown_hist1_count, "/", #histME1)
+
+    -- SHOW HISTORY RESULT EDITORS
+    local shown_hist2_count = 0
+    for i, me in ipairs(histME2) do
+        if me and me.editor then
+            me.editor:setVisible(true)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Shown histME2[" .. i .. "] editor (result): " .. (me.editor:getText() or "N/A"))
+            shown_hist2_count = shown_hist2_count + 1
+        else
+            print("[DEBUG] histME2[" .. i .. "] is NIL/invalid during Dialog:close.")
+        end
+    end
+    print("[DEBUG] Total shown histME2 editors:", shown_hist2_count, "/", #histME2)
+
+    self.view:invalidate()
 end
 
--- In your Dialog class definition (e.g., in gui.lua or dialog.lua)
 
 -- Corrected Dialog:onMouseDown
 function Dialog:onMouseDown(x, y)
@@ -1273,7 +1462,81 @@ function Dialog:onMouseUp(x, y)
         end
     end
 end
+---
+-- Wipes any widgets that are marked as dynamic page content.
+-- This is the "reset" button for our pagination.
+function Dialog:clearPageContent()
+    local widgets_to_keep = {}
+    for i, widget in ipairs(self.widgets) do
+        -- We'll mark our page-specific widgets with a flag.
+        -- If a widget doesn't have this flag, it gets to live.
+        if not widget.isPageContent then
+            table.insert(widgets_to_keep, widget)
+        else
+            -- For the widgets we're destroying, remove them from the main view first.
+            -- This is CRITICAL to prevent them from becoming orphaned zombies.
+            self.view:remove(widget)
+        end
+    end
+    -- Replace the old widget list with the cleansed one.
+    self.widgets = widgets_to_keep
+end
 
+---
+-- Draws the content for a specific page.
+
+function Dialog:updatePage(pageNumber)
+    self.currentPage = pageNumber
+
+    -- 1. NUKE THE OLD CONTENT
+    self:clearPageContent()
+
+    -- Some constants for layout.
+    local contentPaddingX = 20
+    local lineHeight = 18
+    local currentY = self.contentStartY -- Use the value set in the other function.
+
+    -- 2. ADD THE NEW CONTENT (the steps for this page)
+    local startIndex = (self.currentPage - 1) * self.itemsPerPage + 1
+    local endIndex = math.min(self.currentPage * self.itemsPerPage, #self.steps)
+
+    for i = startIndex, endIndex do
+        local stepLabel = TextLabel(self.view, contentPaddingX, currentY, string.format("%d. %s", i, self.steps[i].description))
+        stepLabel.isPageContent = true
+        self:addWidget(stepLabel)
+        currentY = currentY + lineHeight
+    end
+
+    -- 3. ADD THE NAVIGATION CONTROLS (at the bottom)
+    local navY = self.footerControlsY -- Use the pre-calculated Y position for vertical alignment.
+    local currentX = contentPaddingX  -- Start drawing from the left.
+
+    -- "Previous" Button
+    if self.currentPage > 1 then
+        local prevBtn = TextButton(self.view, currentX, navY, "< Prev", function() self:updatePage(self.currentPage - 1) end)
+        prevBtn.isPageContent = true
+        self:addWidget(prevBtn)
+        currentX = currentX + prevBtn.w + 15 -- Move X for the next element
+    end
+
+    -- Page Indicator Label (only if there's more than one page)
+    if self.totalPages > 1 then
+        local pageIndicator = string.format("Page %d of %d", self.currentPage, self.totalPages)
+        local pageLabel = TextLabel(self.view, currentX, navY + 4, pageIndicator) -- +4 for text alignment
+        pageLabel.isPageContent = true
+        self:addWidget(pageLabel)
+        currentX = currentX + getStringWidth(pageIndicator) + 15
+    end
+
+    -- "Next" Button
+    if self.currentPage < self.totalPages then
+        local nextBtn = TextButton(self.view, currentX, navY, "Next >", function() self:updatePage(self.currentPage + 1) end)
+        nextBtn.isPageContent = true
+        self:addWidget(nextBtn)
+    end
+    
+    self.view:invalidate()
+end
 -- Handles the Escape key press for the dialog (if acceptsEscape is true).
 function Dialog:escapeHandler()
     if self.acceptsEscape then
@@ -1302,6 +1565,18 @@ function Dialog:close(result)
     if self.onClose then
         self.onClose(self, result)
     end
+
+    -- SHOW ALL D2EDITORS (fctEditor and history editors) WHEN A DIALOG CLOSES
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(true)
+    end
+    for _, me in ipairs(histME1) do
+        if me.editor then me.editor:setVisible(true) end
+    end
+    for _, me in ipairs(histME2) do
+        if me.editor then me.editor:setVisible(true) end
+    end
+
     self.view:invalidate() -- Request a screen redraw
 end
 
@@ -1794,6 +2069,7 @@ end
 function on.backtabKey()
   if theView then theView:tabBackward(); reposView() end
 end
+-- In gui.lua
 
 function on.enterKey()
     -- If a menu is open, treat Enter as submenu/selection trigger
@@ -1801,184 +2077,306 @@ function on.enterKey()
         on.arrowRight()
         return
     end
-  if not fctEditor or not fctEditor.getExpression then return end
+    
+    if not fctEditor or not fctEditor.getExpression then return end
 
-  -- Recall the current constant category (do not set default here)
-  local recalled = var.recall and var.recall("current_constant_category")
-  if recalled ~= nil then
-    current_constant_category = recalled
-    print("[INIT] Recalled constant category: " .. tostring(current_constant_category))
-  else
-    print("[INIT] Recall failed or value was nil; skipping default set")
-  end
+    -- Recall the current constant category (do not set default here)
+    local recalled = var.recall and var.recall("current_constant_category")
+    if recalled ~= nil then
+        current_constant_category = recalled
+        print("[INIT] Recalled constant category: " .. tostring(current_constant_category))
+    else
+        print("[INIT] Recall failed or value was nil; skipping default set")
+    end
 
-  local input = fctEditor:getExpression()
-  -- Check for custom snarky responses
-  local joke = _G.errors.get(input)
-  if joke then
-    result = joke
-    addME(input, result, "normal")
+    local input = fctEditor:getExpression()
+    
+    -- Clear any previous calculation steps and type before a new calculation.
+    -- This is crucial so old steps don't linger if the new calculation has none.
+    _G.lastCalculationSteps = nil
+    _G.lastCalculationType = nil
+
+    -- Check for custom snarky responses
+    local joke = _G.errors.get(input)
+    if joke then
+        result = joke
+        addME(input, result, "normal")
+        if fctEditor and fctEditor.editor then
+            fctEditor.editor:setText("")
+            fctEditor:fixContent()
+        end
+        if platform and platform.window and platform.window.invalidate then
+            platform.window:invalidate()
+        end
+        return
+    end
+    
+    -- Fix TI-style derivative notation
+    input = input:gsub("%(%(d%)%)%/%(d([a-zA-Z])%((.-)%)%)%)", function(var_name, inner_expr)
+        _G.__diff_var = var_name -- Store derivative variable globally
+        return inner_expr
+    end)
+    
+    if not input or input == "" then 
+        result = _G.errors.get("parse(empty_expression)") or "Error: Empty expression"
+        addME("", result, "error")
+        return 
+    end
+
+    -- Remove all whitespace from input
+    input = input:gsub("%s+", "")
+
+    local result = ""
+    _G.luaCASerror = false
+    
+    local function get_constant_value(fname)
+        local physics_constants = _G.physics_constants or {}
+        local avail = var.recall and var.recall("available_constants") or {}
+        local is_enabled = (avail == nil) or (avail[fname] == true)
+        local cat = var.recall and var.recall("current_constant_category")
+        print("[DEBUG] Category set to:", tostring(cat))
+        if physics_constants[fname]
+            and is_enabled
+            and physics_constants[fname].category == cat then
+            return physics_constants[fname].value
+        end
+        return nil
+    end
+
+    local success, err = pcall(function()
+        local steps_data_local = nil -- Local variable to capture steps from calculation functions
+        local calculation_type_local = nil -- Local variable to capture type
+
+        -- Handle d/dx and d/dy notation
+        if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
+            local expr = input:match("d/d[xy]%((.+)%)")
+            if not expr then
+                result = _G.errors.get("d/dx(nothing)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true
+                return
+            end
+            local res_ast, steps_data = _G.derivative(expr, _G.__diff_var)
+            if not res_ast or res_ast == _G.errors.invalid("diff") then 
+                result = _G.errors.get("diff(unimplemented_node)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true 
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Derivative"
+            end
+            
+        -- Handle ∂/∂x notation
+        elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
+            local expr = input:match("∂/∂x%((.+)%)")
+            if not expr then
+                result = _G.errors.get("diff(invalid_variable)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true
+                return
+            end
+            local res_ast, steps_data = _G.derivative(expr, _G.__diff_var)
+            if not res_ast or res_ast == _G.errors.invalid("diff") then 
+                result = _G.errors.get("diff(unimplemented_node)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true 
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Derivative"
+            end
+            
+        -- Handle diff(expr, var) notation
+        elseif input:match("^diff%(([^,]+),([^,%)]+)%)$") then
+            local a, b = input:match("^diff%(([^,]+),([^,%)]+)%)$")
+            if not (a and b) then
+                result = _G.errors.get("diff(invalid_variable)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true
+                return
+            end
+            local parsed_a = parse(a)
+            if not parsed_a then
+                result = _G.errors.get("parse(syntax)") or _G.errors.invalid("parse")
+                _G.luaCASerror = true
+                return
+            end
+            local res_ast, steps_data = _G.diffAST(parsed_a, b) -- Use diffAST directly
+            if not res_ast or res_ast == _G.errors.invalid("diff") then 
+                result = _G.errors.get("diff(unimplemented_node)") or _G.errors.invalid("diff")
+                _G.luaCASerror = true 
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Derivative"
+            end
+            
+        -- Handle integration (∫(expr)dx) notation (assuming integrate returns steps now)
+        elseif input:sub(1,3) == "∫(" and (input:sub(-1) == "x" or input:sub(-2) == ")x") then -- Adjusted to correctly match dx at end
+            local expr_to_integrate = input:sub(4, -((input:sub(-2) == ")x") and 3 or 2)) -- Adjusted for dx
+            local integration_var = input:match(".+d([a-zA-Z])$") or "x" -- Extract integration variable if explicit, default to x
+            if not expr_to_integrate then
+                result = _G.errors.get("int(nothing)") or _G.errors.invalid("int")
+                _G.luaCASerror = true
+                return
+            end
+            local parsed_expr = parse(expr_to_integrate)
+            if not parsed_expr then
+                result = _G.errors.get("parse(integral)") or _G.errors.invalid("parse")
+                _G.luaCASerror = true
+                return
+            end
+            -- ASSUMPTION: integrate() will be modified to return steps as second value
+            local res_ast, steps_data = integrate(parsed_expr, integration_var) 
+            if not res_ast or res_ast == _G.errors.invalid("int") then
+                result = _G.errors.get("int(unimplemented_node)") or _G.errors.invalid("int")
+                _G.luaCASerror = true
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Integration"
+            end
+            
+        -- Handle solve(eqn) notation (assuming solve returns steps now)
+        elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
+            local eqn = input:match("solve%((.+)%)")
+            if not eqn then
+                result = _G.errors.get("solve(no_analytical)") or _G.errors.invalid("solve")
+                _G.luaCASerror = true
+                return
+            end
+            if eqn and not eqn:find("=") then
+                eqn = eqn .. "=0" -- Default to =0 if no equality given
+            end
+            local parsed_eqn = parse(eqn)
+            if not parsed_eqn then
+                 result = _G.errors.get("parse(syntax)") or _G.errors.invalid("parse")
+                _G.luaCASerror = true
+                return
+            end
+            -- ASSUMPTION: solve() will be modified to return steps as second value
+            local res_ast, steps_data = solve(parsed_eqn) 
+            if not res_ast or res_ast == _G.errors.invalid("solve") then 
+                result = _G.errors.get("solve(no_analytical)") or _G.errors.invalid("solve")
+                _G.luaCASerror = true 
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Solution"
+            end
+            
+        -- Handle expand(expr) notation (assuming expand returns steps now)
+        elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
+            local inner = input:match("expand%((.+)%)")
+            if not inner then
+                result = _G.errors.get("parse(function_missing_args)") or _G.errors.invalid("expand")
+                _G.luaCASerror = true
+                return
+            end
+            local parsed_inner = parse(inner)
+            if not parsed_inner then
+                result = _G.errors.get("parse(syntax)") or _G.errors.invalid("parse")
+                _G.luaCASerror = true
+                return
+            end
+            -- ASSUMPTION: expand() will be modified to return steps as second value
+            local res_ast, steps_data = expand(parsed_inner) 
+            if not res_ast or res_ast == _G.errors.invalid("expand") then 
+                result = _G.errors.get("simplify(unsupported_node)") or _G.errors.invalid("expand")
+                _G.luaCASerror = true 
+            else
+                result = res_ast
+                steps_data_local = steps_data
+                calculation_type_local = "Expansion"
+            end
+            
+        -- Handle let (definition)
+        elseif input:sub(1,3) == "let" then
+            result = define(input)
+            -- No steps for 'let' command typically; steps_data_local and calculation_type_local remain nil
+            
+        else
+            -- Default case: parse and simplify (no steps, just result)
+            local constval = get_constant_value(input)
+            if constval ~= nil then
+                result = constval
+            else
+                print("[DEBUG] Category set to:", var.recall("current_constant_category"))
+                local parsed = parse(input)
+                if not parsed then
+                    result = _G.errors.get("parse(syntax)") or _G.errors.invalid("parse")
+                    _G.luaCASerror = true
+                    return
+                end
+                result = simplify.simplify(parsed)
+                if not result then
+                    result = _G.errors.get("simplify(unsupported_node)") or _G.errors.invalid("simplify")
+                    _G.luaCASerror = true
+                end
+            end
+        end
+        
+        -- Store steps and type globally AFTER successful pcall block
+        _G.lastCalculationSteps = steps_data_local
+        _G.lastCalculationType = calculation_type_local
+        
+        if result == "" or not result then
+            result = _G.errors.get("internal(unknown_error)") or "No result. Internal CAS fallback used."
+            _G.luaCASerror = true
+        end
+    end)
+    
+    if not success then
+        local err_str = tostring(err)
+        local is_custom_error = false
+        for key, msg in pairs(_G.errors) do
+            if type(msg) == "string" and err_str:find(msg, 1, true) then
+                is_custom_error = true
+                break
+            end
+        end
+        
+        if not is_custom_error then
+            if err_str:find("divide") and err_str:find("zero") then
+                result = _G.errors.get("eval(divide_by_zero)") or ("Error: " .. err_str)
+            elseif err_str:find("nil") then
+                result = _G.errors.get("internal(unexpected_nil)") or ("Error: " .. err_str)
+            elseif err_str:find("syntax") then
+                result = _G.errors.get("parse(syntax)") or ("Error: " .. err_str)
+            else
+                result = _G.errors.get("internal(unknown_error)") or ("Error: " .. err_str)
+            end
+        else
+            result = "Error: " .. err_str
+        end
+        _G.luaCASerror = true
+        
+        -- Clear steps if an error occurred, as they might be incomplete/invalid
+        _G.lastCalculationSteps = nil
+        _G.lastCalculationType = nil
+    end
+
+    -- Add to history display with steps attached (now generic)
+    local colorHint = (_G.luaCASerror and "error") or "normal"
+    addME(input, result, colorHint)
+
+    -- Clear the input editor
     if fctEditor and fctEditor.editor then
-      fctEditor.editor:setText("")
-      fctEditor:fixContent()
+        fctEditor.editor:setText("")
+        fctEditor:fixContent()
     end
+
+    -- Redraw UI
     if platform and platform.window and platform.window.invalidate then
-      platform.window:invalidate()
+        platform.window:invalidate()
     end
-    return
-  end
-  -- Fix TI-style derivative notation like ((d)/(dx(x^2))) to diff(x^2, x)
-  input = input:gsub("%(%(d%)%)%/%(d([a-zA-Z])%((.-)%)%)%)", function(var, inner)
-    _G.__diff_var = var
-    return inner
-  end)
-  if not input or input == "" then return end
 
-  -- Remove all whitespace from input
-  input = input:gsub("%s+", "")
-
-  local result = ""
-  _G.luaCASerror = false
-  local function get_constant_value(fname)
-    local physics_constants = _G.physics_constants or {}
-    local avail = var.recall and var.recall("available_constants") or {}
-    local is_enabled = (avail == nil) or (avail[fname] == true)
-    -- Retrieve current category for this resolution
-    local cat = var.recall and var.recall("current_constant_category")
-    print("[DEBUG] Category set to:", tostring(cat))
-    if physics_constants[fname]
-      and is_enabled
-      and physics_constants[fname].category == cat then
-      return physics_constants[fname].value
+    -- Save last result
+    if type(result) == "table" then
+        if _G.ast and _G.ast.tostring then
+            result = _G.ast.tostring(result)
+        else
+            result = "(unrenderable result)"
+        end
     end
-    return nil
-  end
-  local function eval_physics_func(fname)
-    local physics_constants = _G.physics_constants or {}
-    local avail = var.recall and var.recall("available_constants") or {}
-    local is_enabled = (avail == nil) or (avail[fname] == true)
-    -- Retrieve current category for this resolution
-    local cat = var.recall and var.recall("current_constant_category")
-    print("[DEBUG] Category set to:", tostring(cat))
-    if physics_constants[fname]
-      and is_enabled
-      and physics_constants[fname].category == cat then
-      return physics_constants[fname].value
-    end
-    return nil
-  end
-
-  local success, err = pcall(function()
-    if input:sub(1,4) == "d/dx" or input:sub(1,4) == "d/dy" then
-      local expr = input:match("d/d[xy]%((.+)%)")
-      result = expr and derivative(expr, _G.__diff_var) or errors.invalid("diff")
-      if result == errors.invalid("diff") then _G.luaCASerror = true end
-    elseif input:sub(1,5) == "∂/∂x(" and input:sub(-1) == ")" then
-      local expr = input:match("∂/∂x%((.+)%)")
-      result = expr and derivative(expr, _G.__diff_var) or errors.invalid("diff")
-      if result == errors.invalid("diff") then _G.luaCASerror = true end
-    elseif input:match("^∂/∂[yz]%(.+%)$") then
-      result = derivative(input, _G.__diff_var)
-    elseif input:sub(1,3) == "∫(" and input:sub(-2) == ")x" then
-      result = integrate(parse(input:sub(4, -3)))
-    elseif input:sub(1,6) == "solve(" and input:sub(-1) == ")" then
-      local eqn = input:match("solve%((.+)%)")
-      if eqn and not eqn:find("=") then
-        eqn = eqn .. "=0"
-      end
-      result = eqn and solve(parse(eqn)) or errors.invalid("solve")
-      if result == errors.invalid("solve") then _G.luaCASerror = true end
-    elseif input:sub(1,4) == "let" then
-      result = define(input)
-    elseif input:sub(1,7) == "expand(" and input:sub(-1) == ")" then
-        local inner = input:match("expand%((.+)%)")
-        result = inner and expand(parse(inner)) or errors.invalid("expand")
-        if result == errors.invalid("expand") then _G.luaCASerror = true end
-    elseif input:sub(1,5) == "subs(" and input:sub(-1) == ")" then
-        local inner, varname, val = input:match("subs%(([^,]+),([^,]+),([^%)]+)%)")
-        result = (inner and varname and val) and subs(parse(inner), varname, val) or errors.invalid("subs")
-        if result == errors.invalid("subs") then _G.luaCASerror = true end
-    elseif input:sub(1,7) == "factor(" and input:sub(-1) == ")" then
-        local inner = input:match("factor%((.+)%)")
-        result = inner and factor(parse(inner)) or errors.invalid("factor")
-        if result == errors.invalid("factor") then _G.luaCASerror = true end
-    elseif input:sub(1,4) == "gcd(" and input:sub(-1) == ")" then
-        local a, b = input:match("gcd%(([^,]+),([^%)]+)%)")
-        result = (a and b) and gcd(parse(a), parse(b)) or errors.invalid("gcd")
-        if result == errors.invalid("gcd") then _G.luaCASerror = true end
-    elseif input:sub(1,4) == "lcm(" and input:sub(-1) == ")" then
-        local a, b = input:match("lcm%(([^,]+),([^%)]+)%)")
-        result = (a and b) and lcm(parse(a), parse(b)) or errors.invalid("lcm")
-        if result == errors.invalid("lcm") then _G.luaCASerror = true end
-    elseif input:sub(1,7) == "trigid(" and input:sub(-1) == ")" then
-        local inner = input:match("trigid%((.+)%)")
-        result = inner and trigid(parse(inner)) or errors.invalid("trigid")
-        if result == errors.invalid("trigid") then _G.luaCASerror = true end
-    elseif input:match("%w+%(.+%)") then
-      print("[DEBUG] Category set to:", var.recall("current_constant_category"))
-      result = simplify.simplify(parse(input))
-    elseif input:sub(1,9) == "simplify(" and input:sub(-1) == ")" then
-      local inner = input:match("simplify%((.+)%)")
-      print("[DEBUG] Category set to:", var.recall("current_constant_category"))
-      result = inner and simplify.simplify(parse(inner)) or errors.invalid("simplify")
-      if result == errors.invalid("simplify") then _G.luaCASerror = true end
-    -- Fallback parser for diff(...) and integrate(...)
-    elseif input:match("^diff%(([^,]+),([^,%)]+)%)$") then
-      local a, b = input:match("^diff%(([^,]+),([^,%)]+)%)$")
-      result = (a and b) and derivative(parse(a), b) or errors.invalid("diff")
-      if result == errors.invalid("diff") then _G.luaCASerror = true end
-    elseif _G.__diff_var then
-      result = derivative(input, _G.__diff_var)
-      _G.__diff_var = nil
-    elseif input:match("^integrate%(([^,]+),([^,%)]+)%)$") then
-      local a, b = input:match("^integrate%(([^,]+),([^,%)]+)%)$")
-      result = (a and b) and integrate(parse(a), b) or errors.invalid("int")
-      if result == errors.invalid("int") then _G.luaCASerror = true end
-    else
-      -- Try constant resolution
-      local constval = get_constant_value(input)
-      if constval ~= nil then
-        result = constval
-      else
-        print("[DEBUG] Category set to:", var.recall("current_constant_category"))
-        result = simplify.simplify(parse(input))
-      end
-    end
-    if result == "" or not result then
-      result = "No result. Internal CAS fallback used."
-    end
-  end)
-  if not success then
-    result = "Error: " .. tostring(err)
-    _G.luaCASerror = true
-  end
-
-  -- Add to history display
-  local colorHint = (_G.luaCASerror and "error") or "normal"
-  addME(input, result, colorHint)
-
-  -- Clear the input editor and ready for next input
-  if fctEditor and fctEditor.editor then
-    fctEditor.editor:setText("")
-    fctEditor:fixContent()
-  end
-
-  -- Redraw UI
-  if platform and platform.window and platform.window.invalidate then
-    platform.window:invalidate()
-  end
-
-  -- Optionally save last result globally if needed
-  if type(result) == "table" then
-    if _G.ast and _G.ast.tostring then
-      result = _G.ast.tostring(result)
-    else
-      result = "(unrenderable result)"
-    end
-  end
-  res = result
+    res = result
 end
-
 function on.returnKey()
   on.enterKey()
 end
@@ -2026,30 +2424,116 @@ function Dialog:addWidget(widget)
     self.view:repos(widget) -- Reposition in case constraints are set
 end
 
+
+-- Activates the dialog, making it visible and focusable.
 function Dialog:activate()
     self.visible = true
-    -- No need to self.view:add(self) here if it's already added in on.paint if not existing.
-    -- Set focus to the first focusable widget within the dialog if available
+    -- Set this dialog as the active modal dialog for the view
+    self.view.activeModalDialog = self
+
+    print("--- [DEBUG] Dialog:activate() - Attempting to hide all MathEditors ---")
+
+    -- HIDE MAIN INPUT EDITOR
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(false)
+        print("[DEBUG] Hidden fctEditor (main input editor).")
+    else
+        print("[DEBUG] fctEditor or its editor is NIL/invalid during Dialog:activate.")
+    end
+
+    -- HIDE HISTORY INPUT EDITORS
+    local hidden_hist1_count = 0
+    for i, me in ipairs(histME1) do
+        if me and me.editor then
+            me.editor:setVisible(false)
+            -- Optional: Uncomment for extreme verbosity, might spam console for long history
+            -- print("[DEBUG] Hidden histME1[" .. i .. "] editor (input): " .. (me.editor:getText() or "N/A"))
+            hidden_hist1_count = hidden_hist1_count + 1
+        else
+            print("[DEBUG] histME1[" .. i .. "] is NIL/invalid during Dialog:activate.")
+        end
+    end
+    print("[DEBUG] Total hidden histME1 editors:", hidden_hist1_count, "/", #histME1)
+
+    -- HIDE HISTORY RESULT EDITORS
+    local hidden_hist2_count = 0
+    for i, me in ipairs(histME2) do
+        if me and me.editor then
+            me.editor:setVisible(false)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Hidden histME2[" .. i .. "] editor (result): " .. (me.editor:getText() or "N/A"))
+            hidden_hist2_count = hidden_hist2_count + 1
+        else
+            print("[DEBUG] histME2[" .. i .. "] is NIL/invalid during Dialog:activate.")
+        end
+    end
+    print("[DEBUG] Total hidden histME2 editors:", hidden_hist2_count, "/", #histME2)
+
+    -- Set focus to the first focusable widget within the dialog (for keyboard nav)
     for _, widget in ipairs(self.widgets) do
         if widget.acceptsFocus then
             self.view:setFocus(widget)
             break
         end
     end
-    self.view:invalidate()
+    self.view:invalidate() -- Request a screen redraw
 end
 
+
+-- Closes the dialog, making it invisible and removing its widgets from the view.
 function Dialog:close(result)
     self.result = result
     self.visible = false
-    -- Remove dialog and its child widgets from the main view's tracking
-    self.view:remove(self) -- Remove dialog itself from view's widgetList/focusList
+    if self.view.activeModalDialog == self then
+        self.view.activeModalDialog = nil
+    end
+
+    self.view:remove(self)
     for _, widget in ipairs(self.widgets) do
-        self.view:remove(widget) -- Remove child widgets from view
+        self.view:remove(widget)
     end
     if self.onClose then
         self.onClose(self, result)
     end
+
+    print("--- [DEBUG] Dialog:close() - Attempting to show all MathEditors ---")
+
+    -- SHOW MAIN INPUT EDITOR
+    if fctEditor and fctEditor.editor then
+        fctEditor.editor:setVisible(true)
+        print("[DEBUG] Shown fctEditor (main input editor).")
+    else
+        print("[DEBUG] fctEditor or its editor is NIL/invalid during Dialog:close.")
+    end
+
+    -- SHOW HISTORY INPUT EDITORS
+    local shown_hist1_count = 0
+    for i, me in ipairs(histME1) do
+        if me and me.editor then
+            me.editor:setVisible(true)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Shown histME1[" .. i .. "] editor (input): " .. (me.editor:getText() or "N/A"))
+            shown_hist1_count = shown_hist1_count + 1
+        else
+            print("[DEBUG] histME1[" .. i .. "] is NIL/invalid during Dialog:close.")
+        end
+    end
+    print("[DEBUG] Total shown histME1 editors:", shown_hist1_count, "/", #histME1)
+
+    -- SHOW HISTORY RESULT EDITORS
+    local shown_hist2_count = 0
+    for i, me in ipairs(histME2) do
+        if me and me.editor then
+            me.editor:setVisible(true)
+            -- Optional: Uncomment for extreme verbosity
+            -- print("[DEBUG] Shown histME2[" .. i .. "] editor (result): " .. (me.editor:getText() or "N/A"))
+            shown_hist2_count = shown_hist2_count + 1
+        else
+            print("[DEBUG] histME2[" .. i .. "] is NIL/invalid during Dialog:close.")
+        end
+    end
+    print("[DEBUG] Total shown histME2 editors:", shown_hist2_count, "/", #histME2)
+
     self.view:invalidate()
 end
 
@@ -2172,7 +2656,7 @@ function on.mouseUp(x, y)
     if _G.showHelpModal then
         if not _G.helpDialog then
             -- Create the help dialog only once
-            -- ... (your existing dialog creation code, without _G.helpDialog:paint) ...
+           
 
             -- Ensure it's added to the view and activated when created
             theView:add(_G.helpDialog)
@@ -2185,7 +2669,7 @@ function on.mouseUp(x, y)
     if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartupHint then
         if not _G.startupHintDialog then
             -- Create the startup hint dialog only once
-            -- ... (your existing dialog creation code, without _G.startupHintDialog:paint) ...
+            
 
             -- Ensure it's added to the view and activated when created
             theView:add(_G.startupHintDialog)
@@ -2339,8 +2823,6 @@ function resizeMElim(editor, w, h, lim)
     end
     return editor
 end
-
--- “Scroll” and reflow all history MathEditors on screen
 function reposME()
     local totalh, beforeh, visih = 0, 0, 0
 
@@ -2386,8 +2868,21 @@ function reposME()
         end
         -- Place its paired “result” editor on the right, vertically aligned
         if i <= #histME2 then
-            histME2[i].y = ry + math.max(0, h1 - h2)
-            theView:repos(histME2[i])
+            mer = histME2[i] -- Get the result editor
+            mer.y = ry + math.max(0, h1 - h2)
+            theView:repos(mer)
+
+            -- *** START OF NEW LOGIC FOR EXPLANATION BUTTON REPOSITIONING ***
+            if mer.explanationButton then
+                -- Recalculate its position based on the updated 'mer' position
+                local btnSize = mer.explanationButton.w -- Use its current width/height
+                mer.explanationButton.x = mer.x - btnSize - 5 -- X position relative to mer.x
+                mer.explanationButton.y = mer.y + 2 -- Y position relative to mer.y
+                -- Tell the view to re-evaluate its constraints and position.
+                -- This is crucial as the button is a direct child of theView.
+                theView:repos(mer.explanationButton) 
+            end
+            -- *** END OF NEW LOGIC ***
         end
     end
 
@@ -2478,7 +2973,10 @@ local function addStringToFctEditor(actionString)
         print("Error: _G.fctEditor not available to add string: " .. actionString)
     end
 end
-
+local function showGraphingDialog()
+    _G.showGraphingModal = true
+    platform.window:invalidate() -- Invalidate to show the modal
+end
 local function showSettingsModal()
     _G.showSettingsModal = true
     platform.window:invalidate() -- Invalidate to show the modal
@@ -2489,63 +2987,6 @@ local function showHelpModal()
     platform.window:invalidate() -- Invalidate to show the modal
 end
 
--- Handler function for toolpalette menu items
-local function toolpaletteMenuHandler(toolboxName, menuItemName)
-    if toolboxName == "Calculus" then
-        if menuItemName == "Differentiate" then
-            addStringToFctEditor("d/dx()")
-        elseif menuItemName == "Integrate" then
-            addStringToFctEditor("∫(,)")
-        elseif menuItemName == "Abs" then
-            addStringToFctEditor("abs()")
-        elseif menuItemName == "Factorial" then
-            addStringToFctEditor("factorial(")
-        elseif menuItemName == "Empty Matrix" then
-            addStringToFctEditor("[[,],[,]]")
-        elseif menuItemName == "Taylor Series" then
-            addStringToFctEditor("series(f,x,a,n)")
-        elseif menuItemName == "Fourier Series" then
-            addStringToFctEditor("series(f,x,a,n)")
-        elseif menuItemName == "Maclaurin Series" then
-            addStringToFctEditor("series(f,x,0,n)")
-        end
-    elseif toolboxName == "Solve" then
-        if menuItemName == "Solve Equation" then
-            addStringToFctEditor("solve(")
-        end
-    elseif toolboxName == "App Options" then
-        if menuItemName == "Settings" then
-            showSettingsModal()
-        elseif menuItemName == "Help" then
-            showHelpModal()
-        end
-    end
-end
-
--- Correct menu structure for toolpalette.register
-local myToolPaletteMenuStructure = {
-    {"Calculus", -- First toolbox
-        {"Differentiate", toolpaletteMenuHandler},
-        {"Integrate", toolpaletteMenuHandler},
-        {"Abs", toolpaletteMenuHandler},
-        {"Factorial", toolpaletteMenuHandler},
-        {"Empty Matrix", toolpaletteMenuHandler},
-        "-", -- Separator
-        {"Taylor Series", toolpaletteMenuHandler},
-        {"Fourier Series", toolpaletteMenuHandler},
-        {"Maclaurin Series", toolpaletteMenuHandler},
-    },
-    {"Solve", -- Second toolbox
-        {"Solve Equation", toolpaletteMenuHandler},
-    },
-    {"App Options", -- Third toolbox
-        {"Settings", toolpaletteMenuHandler},
-        {"Help", toolpaletteMenuHandler},
-    }
-}
-
--- Register the tool palette
-toolpalette.register(myToolPaletteMenuStructure)
 
 
 
@@ -2730,6 +3171,98 @@ end
 
         -- Draw settings modal if enabled (block moved to end)
     end
+    if _G.showGraphingModal then
+            if not _G.graphingDialog then
+                -- Define base positions for elements relative to the dialog's top-left corner (0,0)
+                
+                local labelColX = 10
+                local inputColX = 90
+                local inputWidth = 200
+                local inputHeight = 20
+                local spacing = 30 -- Vertical spacing between input rows
+                local checkboxYStart = 140 -- Y-start for checkboxes
+
+                -- Hide the editor immediately when the dialog is activated
+                if fctEditor and fctEditor.editor then
+                    fctEditor.editor:setVisible(false)
+                end
+
+                _G.graphingDialog = Dialog(theView, {
+                    title = "Graphing Options",
+                    width = 300,
+                    height = 280, -- Adjusted height to fit all inputs and checkboxes
+                    x = (platform.window:width() - 300) / 2, -- Center horizontally
+                    y = (platform.window:height() - 280) / 2, -- Center vertically
+
+                    elements = {
+                        -- Explicit Function Input
+                        { type = "TextLabel", x = labelColX, y = 10, text = "Y = f(x):" },
+                        { type = "TextInput", x = inputColX, y = 10, width = inputWidth, height = inputHeight, name = "explicitFunc",
+                          text = _G.graph_state.explicit_func_expr }, -- Pre-fill with current value
+
+                        -- Implicit Function Input
+                        { type = "TextLabel", x = labelColX, y = 10 + spacing, text = "F(x,y) = 0:" },
+                        { type = "TextInput", x = inputColX, y = 10 + spacing, width = inputWidth, height = inputHeight, name = "implicitFunc",
+                          text = _G.graph_state.implicit_func_expr },
+
+                        -- Intersection Expressions Input
+                        { type = "TextLabel", x = labelColX, y = 10 + 2 * spacing, text = "Expr 1 (Y=):" },
+                        { type = "TextInput", x = inputColX, y = 10 + 2 * spacing, width = inputWidth, height = inputHeight, name = "intersection1",
+                          text = _G.graph_state.intersection_expr1 },
+                        { type = "TextLabel", x = labelColX, y = 10 + 3 * spacing, text = "Expr 2 (Y=):" },
+                        { type = "TextInput", x = inputColX, y = 10 + 3 * spacing, width = inputWidth, height = inputHeight, name = "intersection2",
+                          text = _G.graph_state.intersection_expr2 },
+
+                        -- Checkboxes for visibility
+                        { type = "CheckBox", x = labelColX, y = checkboxYStart, text = "Show Y=f(x)", checked = _G.graph_state.show_explicit, name = "chkExplicit",
+                          onAction = function(self) self.checked = not self.checked; platform.window:invalidate() end },
+                        { type = "CheckBox", x = labelColX, y = checkboxYStart + 20, text = "Show F(x,y)=0", checked = _G.graph_state.show_implicit, name = "chkImplicit",
+                          onAction = function(self) self.checked = not self.checked; platform.window:invalidate() end },
+                        { type = "CheckBox", x = labelColX, y = checkboxYStart + 40, text = "Show Intersections", checked = _G.graph_state.show_intersections, name = "chkIntersections",
+                          onAction = function(self) self.checked = not self.checked; platform.window:invalidate() end },
+                        { type = "CheckBox", x = labelColX, y = checkboxYStart + 60, text = "Show Labels", checked = _G.graph_state.show_labels, name = "chkLabels",
+                          onAction = function(self) self.checked = not self.checked; platform.window:invalidate() end },
+
+                        -- Buttons
+                        { type = "TextButton", x = 300 - 150, y = 280 - 30, width = 60, height = 20, text = "Graph",
+                          closesDialog = true,
+                          command = function(dlg, btn)
+                              -- Update global state with new values from input fields
+                              _G.graph_state.explicit_func_expr = dlg.namedWidgets.explicitFunc.text
+                              _G.graph_state.implicit_func_expr = dlg.namedWidgets.implicitFunc.text
+                              _G.graph_state.intersection_expr1 = dlg.namedWidgets.intersection1.text
+                              _G.graph_state.intersection_expr2 = dlg.namedWidgets.intersection2.text
+
+                              _G.graph_state.show_explicit = dlg.namedWidgets.chkExplicit.checked
+                              _G.graph_state.show_implicit = dlg.namedWidgets.chkImplicit.checked
+                              _G.graph_state.show_intersections = dlg.namedWidgets.chkIntersections.checked
+                              _G.graph_state.show_labels = dlg.namedWidgets.chkLabels.checked
+
+                              graphics.redraw() -- Request a redraw to show the new graphs
+                          end
+                        },
+                        { type = "TextButton", x = 300 - 70, y = 280 - 30, width = 60, height = 20, text = "Cancel",
+                          closesDialog = true,
+                          command = function(dlg, btn)
+                              -- Do nothing, just close the dialog
+                          end
+                        }
+                    },
+                    onClose = function(dlg, result)
+                        _G.showGraphingModal = false -- Important: Set flag to false when dialog closes
+                        -- Restore visibility of the function editor after dialog closes
+                        if fctEditor and fctEditor.editor then
+                            fctEditor.editor:setVisible(true)
+                        end
+                        _G.graphingDialog = nil -- Clear reference to the dialog
+                        platform.window:invalidate() -- Ensure a redraw happens
+                    end
+                })
+                theView:add(_G.graphingDialog)
+                _G.graphingDialog:activate() -- Show the dialog
+            end
+            _G.graphingDialog:paint(gc, true) -- Paint the dialog on top
+        end
     
 -- Replace the entire manual drawing block for _G.showSettingsModal
 if _G.showSettingsModal then
@@ -2904,11 +3437,7 @@ if var and var.recall and var.recall("hide_startup_hint") ~= 1 and _G.showStartu
         theView:add(_G.startupHintDialog)
         _G.startupHintDialog:activate()
     end
-    -- --- START OF CHANGE ---
-    -- Move the paint call OUTSIDE the 'if not _G.startupHintDialog then' block
-    if _G.startupHintDialog and _G.startupHintDialog.visible then -- Ensure it exists and is visible before painting
-        _G.startupHintDialog:paint(gc, true)
-    end
+    
     -- --- END OF CHANGE ---
 end
 end
@@ -2933,59 +3462,62 @@ strFullHeight = 0
 -- Initialize empty history tables
 histME1 = {}
 histME2 = {}
+-- In gui.lua
 
-
--- Reminder: this is the thing that dumps both the input and result into history.
 function addME(expr, res, colorHint)
-	mee = MathEditor(theView, border, border, 50, 30, "")
-	mee.readOnly = true
-	table.insert(histME1, mee)
-	mee:setHConstraints("left", border)
-	mee.editor:setSizeChangeListener(function(editor, w, h)
-		return resizeME(editor, w + 3, h)
-	end)
-	-- Set border color based on colorHint
-	if colorHint == "error" then
-		mee.editor:setBorderColor(0xFF0000) -- red
-	else
-		mee.editor:setBorderColor(0x000000)
-	end
-	mee.editor:setExpression("\\0el {" .. expr .. "}", 0)
-	mee:fixCursor()
-	mee.editor:setReadOnly(true)
-	theView:add(mee)
+    local mee = MathEditor(theView, border, border, 50, 30, "")
+    mee.readOnly = true
+    table.insert(histME1, mee)
+    mee:setHConstraints("left", border)
+    mee.editor:setSizeChangeListener(function(editor, w, h)
+        return resizeME(editor, w + 3, h)
+    end)
+    
+    -- Set border color based on colorHint
+    if colorHint == "error" then
+        mee.editor:setBorderColor(0xFF0000) -- red
+    else
+        mee.editor:setBorderColor(0x000000)
+    end
+    mee.editor:setExpression("\\0el {" .. expr .. "}", 0)
+    mee:fixCursor()
+    mee.editor:setReadOnly(true)
+    theView:add(mee)
 
-	mer = MathEditor(theView, border, border, 50, 30, "")
+    local mer = MathEditor(theView, border, border, 50, 30, "")
     mer.result = true
     mer.readOnly = true
-	table.insert(histME2, mer)
-	mer:setHConstraints("right", scrWidth - sbv.x + border)
-	mer.editor:setSizeChangeListener(function(editor, w, h)
-				return resizeMEpar(editor, w + border, h)
-	end)
-	if colorHint == "error" then
-		mer.editor:setBorderColor(0xFF0000) -- red
-	else
-		mer.editor:setBorderColor(0x000000)
-	end
+    table.insert(histME2, mer)
+    mer:setHConstraints("right", scrWidth - sbv.x + border)
+    mer.editor:setSizeChangeListener(function(editor, w, h)
+        return resizeMEpar(editor, w + border, h)
+    end)
+    
+    if colorHint == "error" then
+        mer.editor:setBorderColor(0xFF0000) -- red
+    else
+        mer.editor:setBorderColor(0x000000)
+    end
+    
     local displayRes = ""
     if type(res) == "table" then
-      if _G.simplify and _G.simplify.pretty_print then
-        displayRes = _G.simplify.pretty_print(res)
-      elseif _G.ast and _G.ast.tostring then
-        displayRes = _G.ast.tostring(res)
-      else
-        displayRes = tostring(res)
-      end
+        if _G.simplify and _G.simplify.pretty_print then
+            displayRes = _G.simplify.pretty_print(res)
+        elseif _G.ast and _G.ast.tostring then
+            displayRes = _G.ast.tostring(res)
+        else
+            displayRes = tostring(res)
+        end
     else
-      displayRes = tostring(res)
+        displayRes = tostring(res)
     end
+    
     mer.editor:setExpression("\\0el {" .. displayRes .. "}", 0)
-	mer:fixCursor()
-	mer.editor:setReadOnly(true)
-	theView:add(mer)
+    mer:fixCursor()
+    mer.editor:setReadOnly(true)
+    theView:add(mer)
 
-    -- Set dark/light mode colors for both new MathEditors (mee, mer) consistently
+    -- Set dark/light mode colors
     local bg = _G.darkMode and {30, 30, 30} or {255, 255, 255}
     local text = _G.darkMode and {255, 255, 255} or {0, 0, 0}
     local border = _G.darkMode and {100, 100, 100} or {0, 0, 0}
@@ -3004,13 +3536,121 @@ function addME(expr, res, colorHint)
         end
     end
 
-	reposME()
+    -- --- START OF MODIFICATION: Generic Explanation Button ---
+    -- Remove any existing explanation button for this specific result entry.
+    if mer.explanationButton then
+        theView:remove(mer.explanationButton)
+        mer.explanationButton = nil -- Clear the reference
+    end
 
--- Any unhandled errors will cause LuaCAS Engine status to go NONE (red)
+    -- Add explanation button ONLY IF _G.lastCalculationSteps holds actual steps
+    if _G.lastCalculationSteps and #_G.lastCalculationSteps > 0 then
+        -- Store the steps and type with the result editor
+        mer.calculationSteps = _G.lastCalculationSteps
+        mer.calculationType = _G.lastCalculationType or "Calculation" -- Default type if not set
+        mer.originalExpression = expr
+        
+        -- Create a small "?" button
+        local btnSize = 18
+        local explainBtn = TextButton(theView, 
+            mer.x - btnSize - 5,  -- Left of the result
+            mer.y + 2, 
+            "?", 
+            function()
+                -- Call the new generic explanation dialog function
+                showCalculationExplanation(mer.calculationSteps, mer.originalExpression, mer.calculationType)
+            end,
+            nil
+        )
+        
+        -- Make it tiny and cute
+        explainBtn.w = btnSize
+        explainBtn.h = btnSize
+        
+        -- Store reference for cleanup AND for reposME to find it
+        mer.explanationButton = explainBtn
+        theView:add(explainBtn) -- Add it to the view so it's managed
+        
+        -- Clear global steps after consumption by addME
+        _G.lastCalculationSteps = nil
+        _G.lastCalculationType = nil
+    end
+    -- --- END OF MODIFICATION ---
+
+    reposME()
 end
 -- Make var globally accessible for parser/physics.lua
 _G.var = var
+function destroyD2Editor(editor)
+	if not editor then return end
+	editor:setVisible(false)
+	editor:move(-10000, -10000)
+	editor:resize(1, 1)
+	editor = nil
+end
+function toggleBorders()
+	showEditorsBorders = not showEditorsBorders
+	on.resize()
+end
 
+function set1d()
+	 fctEditor.editor:setDisable2DinRT(true)
+	on.resize()
+end
+
+function set2d()
+	 fctEditor.editor:setDisable2DinRT(false)
+	on.resize()
+end
+
+function toggleHLines()
+	showHLines = not showHLines
+	on.resize()
+end
+
+function applyFontSizeChange()
+	fctEditor.editor:setFontSize(fsize)
+	for _, e in pairs(histME1) do
+		e.editor:setFontSize(fsize)
+	end
+	for _, e in pairs(histME2) do
+		e.editor:setFontSize(fsize)
+	end
+end
+
+function fontDown()
+	fsize = fsize > 6 and (fsize - 1) or fsize
+	applyFontSizeChange()
+end
+
+function fontUp()
+	fsize = fsize < 30 and (fsize + 1) or fsize
+	applyFontSizeChange()
+end
+function reset()
+    -- Remove all widgets first
+    for _, v in pairs(theView.widgetList) do
+        theView:remove(v)
+    end
+    
+    -- Destroy all editors
+    for _, e in pairs(histME1) do
+        destroyD2Editor(e.editor)
+    end
+    for _, e in pairs(histME2) do
+        -- Clean up any explanation buttons
+        if e.explanationButton then
+            theView:remove(e.explanationButton)
+        end
+        destroyD2Editor(e.editor)
+    end
+    
+    histME1 = {}
+    histME2 = {}
+    fsize = 10
+    
+    platform.window:invalidate()
+end
 function on.construction()
   setupLaunchAnimation()
   toolpalette.register(myToolPaletteMenuStructure)
@@ -3036,3 +3676,71 @@ function _G.gui.get_current_constant_category()
     end
     return "fundamental"
 end
+
+
+-- Handler function for toolpalette menu items
+function toolpaletteMenuHandler(toolboxName, menuItemName)
+    if toolboxName == "Calculus" then
+        if menuItemName == "Differentiate" then
+            addStringToFctEditor("d/dx()")
+        elseif menuItemName == "Integrate" then
+            addStringToFctEditor("∫(,)")
+        elseif menuItemName == "Abs" then
+            addStringToFctEditor("abs()")
+        elseif menuItemName == "Factorial" then
+            addStringToFctEditor("factorial(")
+        elseif menuItemName == "Empty Matrix" then
+            addStringToFctEditor("[[,],[,]]")
+        elseif menuItemName == "Taylor Series" then
+            addStringToFctEditor("series(f,x,a,n)")
+        elseif menuItemName == "Fourier Series" then
+            addStringToFctEditor("series(f,x,a,n)")
+        elseif menuItemName == "Maclaurin Series" then
+            addStringToFctEditor("series(f,x,0,n)")
+        end
+    elseif toolboxName == "Solve" then
+        if menuItemName == "Solve Equation" then
+            addStringToFctEditor("solve(")
+        end
+    elseif toolboxName == "App Options" then
+        if menuItemName == "Settings" then
+            showSettingsModal()
+        elseif menuItemName == "Help" then
+            showHelpModal()
+        elseif menuItemName == "Graphing" then -- <-- NEW: Handle the Graphing option
+            showGraphingDialog()                -- Call the function to display the graphing dialog
+        end
+    end
+end
+
+myToolPaletteMenuStructure = {
+    {"Calculus", -- First toolbox
+        {"Differentiate", toolpaletteMenuHandler},
+        {"Integrate", toolpaletteMenuHandler},
+        {"Abs", toolpaletteMenuHandler},
+        {"Factorial", toolpaletteMenuHandler},
+        {"Empty Matrix", toolpaletteMenuHandler},
+        "-", -- Separator
+        {"Taylor Series", toolpaletteMenuHandler},
+        {"Fourier Series", toolpaletteMenuHandler},
+        {"Maclaurin Series", toolpaletteMenuHandler},
+    },
+    {"Solve", -- Second toolbox
+        {"Solve Equation", toolpaletteMenuHandler},
+    },
+    {"App Options", -- Third toolbox
+        {"Settings", toolpaletteMenuHandler},
+        {"Help", toolpaletteMenuHandler},
+        {"Graphing", toolpaletteMenuHandler}, -- <--- ADD THIS LINE
+        { "Show/hide editors borders", toggleBorders },
+		{ "Show/hide horizontal lines", toggleHLines },
+		"-",
+		{ "Increase font size", fontUp },
+		{ "Decrease font size", fontDown },
+        { "Clear history", reset },
+        { "Restart CAS", initGUI }
+    }
+}
+
+-- Register the tool palette
+toolpalette.register(myToolPaletteMenuStructure)

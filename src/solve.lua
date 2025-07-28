@@ -1,6 +1,243 @@
+-- solve.lua - Now with 50% less mathematical masturbation
+-- Because apparently some of us can count past 10 without taking our shoes off
+
+local ast = rawget(_G, "ast") or require("ast")
+local errors = _G.errors
+
+-- Helper to format expressions nicely for steps
+local function format_expr(ast_node)
+  if not ast_node then return "nil" end
+  if type(ast_node) == "number" then return tostring(ast_node) end
+  if type(ast_node) == "string" then return ast_node end
+  if type(ast_node) ~= "table" then return tostring(ast_node) end
+  
+  if ast_node.type == "number" then return tostring(ast_node.value) end
+  if ast_node.type == "variable" then return ast_node.name end
+  if ast_node.type == "symbol" then return ast_node.name end
+  
+  if ast_node.type == "add" then 
+    if ast_node.args then
+      local parts = {}
+      for _, arg in ipairs(ast_node.args) do
+        table.insert(parts, format_expr(arg))
+      end
+      return table.concat(parts, " + ")
+    else
+      return format_expr(ast_node.left) .. " + " .. format_expr(ast_node.right)
+    end
+  end
+  
+  if ast_node.type == "sub" then 
+    return format_expr(ast_node.left) .. " - " .. format_expr(ast_node.right)
+  end
+  
+  if ast_node.type == "mul" then 
+    if ast_node.args then
+      local parts = {}
+      for _, arg in ipairs(ast_node.args) do
+        local part = format_expr(arg)
+        if arg.type == "add" or arg.type == "sub" then
+          part = "(" .. part .. ")"
+        end
+        table.insert(parts, part)
+      end
+      return table.concat(parts, "·")
+    else
+      return format_expr(ast_node.left) .. "·" .. format_expr(ast_node.right)
+    end
+  end
+  
+  if ast_node.type == "div" then 
+    local num = format_expr(ast_node.left)
+    local den = format_expr(ast_node.right)
+    if ast_node.left.type == "add" or ast_node.left.type == "sub" then
+      num = "(" .. num .. ")"
+    end
+    if ast_node.right.type == "add" or ast_node.right.type == "sub" then
+      den = "(" .. den .. ")"
+    end
+    return num .. "/" .. den
+  end
+  
+  if ast_node.type == "power" or ast_node.type == "pow" then 
+    local base = ast_node.left or ast_node.base
+    local exp = ast_node.right or ast_node.exp or ast_node.exponent
+    local base_str = format_expr(base)
+    if base.type ~= "variable" and base.type ~= "number" then
+      base_str = "(" .. base_str .. ")"
+    end
+    return base_str .. "^" .. format_expr(exp)
+  end
+  
+  if ast_node.type == "neg" then 
+    local inner = ast_node.arg or ast_node.value
+    local inner_str = format_expr(inner)
+    if inner.type == "add" or inner.type == "sub" then
+      inner_str = "(" .. inner_str .. ")"
+    end
+    return "-" .. inner_str
+  end
+  
+  if ast_node.type == "func" then
+    local argstrs = {}
+    for _, arg in ipairs(ast_node.args or {}) do
+      table.insert(argstrs, format_expr(arg))
+    end
+    return ast_node.name .. "(" .. table.concat(argstrs, ", ") .. ")"
+  end
+  
+  if ast_node.type == "eq" or ast_node.type == "equation" then 
+    return format_expr(ast_node.left) .. " = " .. format_expr(ast_node.right)
+  end
+  
+  return "UNKNOWN[" .. (ast_node.type or "no_type") .. "]"
+end
+
+-- Complexity analyzer - because not all equations deserve a PhD dissertation
+local function analyzeComplexity(equation_str, coeffs, degree)
+    local complexity = {
+        score = 0,
+        is_trivial = false,
+        reasons = {}
+    }
+    
+    -- Check for simple integer coefficients
+    local all_integers = true
+    local all_small = true
+    local non_zero_count = 0
+    
+    for deg, coeff in pairs(coeffs) do
+        if coeff ~= 0 then
+            non_zero_count = non_zero_count + 1
+            if coeff ~= math.floor(coeff) then
+                all_integers = false
+            end
+            if math.abs(coeff) > 100 then
+                all_small = false
+            end
+        end
+    end
+    
+    -- Scoring system for complexity
+    if degree == 1 then
+        complexity.score = 1
+        table.insert(complexity.reasons, "linear equation")
+    elseif degree == 2 then
+        complexity.score = 2
+        -- Check if it's a simple form like ax² = b
+        if non_zero_count == 2 and coeffs[1] == 0 then
+            complexity.score = 1.5
+            complexity.is_trivial = true
+            table.insert(complexity.reasons, "trivial quadratic (ax² = b)")
+        elseif all_integers and all_small then
+            complexity.score = 2
+            table.insert(complexity.reasons, "simple quadratic")
+        else
+            complexity.score = 3
+            table.insert(complexity.reasons, "general quadratic")
+        end
+    elseif degree == 3 then
+        complexity.score = 4
+        table.insert(complexity.reasons, "cubic equation")
+    elseif degree == 4 then
+        complexity.score = 5
+        -- Check for biquadratic
+        if (coeffs[3] or 0) == 0 and (coeffs[1] or 0) == 0 then
+            complexity.score = 3.5
+            table.insert(complexity.reasons, "biquadratic equation")
+        else
+            table.insert(complexity.reasons, "quartic equation")
+        end
+    end
+    
+    -- Additional complexity factors
+    if not all_integers then
+        complexity.score = complexity.score + 0.5
+        table.insert(complexity.reasons, "non-integer coefficients")
+    end
+    
+    if not all_small then
+        complexity.score = complexity.score + 0.5
+        table.insert(complexity.reasons, "large coefficients")
+    end
+    
+    return complexity
+end
+
+-- Step filtering based on complexity
+local function filterSteps(steps, complexity)
+    if not steps or #steps == 0 then return steps end
+    
+    local filtered = {}
+    local skip_patterns = {}
+    
+    -- Define what to skip based on complexity
+    if complexity.is_trivial then
+        skip_patterns = {
+            "Extracting polynomial coefficients",
+            "After simplification",
+            "Rearranging to standard form",
+            "Standard quadratic form",
+            "Discriminant:",
+            "Where a =",
+            "Using quadratic formula",
+            "Polynomial degree",
+            "Variable to solve for",
+            "Converting to equation form",
+            "This is a %w+ equation"
+        }
+    elseif complexity.score < 3 then
+        skip_patterns = {
+            "Extracting polynomial coefficients",
+            "After simplification",
+            "Variable to solve for",
+            "Polynomial degree"
+        }
+    elseif complexity.score < 4 then
+        skip_patterns = {
+            "Variable to solve for"
+        }
+    end
+    
+    -- Filter steps
+    for _, step in ipairs(steps) do
+        local skip = false
+        for _, pattern in ipairs(skip_patterns) do
+            if string.find(step.description, pattern) then
+                skip = true
+                break
+            end
+        end
+        
+        if not skip then
+            table.insert(filtered, step)
+        end
+    end
+    
+    -- For trivial equations, keep only the essentials
+    if complexity.is_trivial and #filtered > 4 then
+        local essential = {}
+        table.insert(essential, steps[1]) -- Original equation
+        
+        -- Find and keep the actual solution steps
+        for i = #steps, 1, -1 do
+            if string.find(steps[i].description, "=") and 
+               (string.find(steps[i].description, "x") or 
+                string.find(steps[i].description, "y") or 
+                string.find(steps[i].description, "Solution")) then
+                table.insert(essential, 1, steps[i])
+                if #essential >= 3 then break end
+            end
+        end
+        
+        return essential
+    end
+    
+    return filtered
+end
+
 local function safe_sqrt(x)
     if type(x) == "table" then
-        -- x is complex: sqrt(x) = sqrt(r) * exp(i * theta/2)
         local a, b = x.re or 0, x.im or 0
         local r = math.sqrt(a^2 + b^2)
         local theta = math.atan2(b, a)
@@ -16,13 +253,6 @@ local function safe_sqrt(x)
     end
 end
 
--- solve.lua - Complete Fixed Edition
--- Now with 100% less orphaned code and 200% more actual functionality
-
-local ast = rawget(_G, "ast") or require("ast")
-local errors = _G.errors
-
--- Utility: checks if an AST node contains a variable (recursive)
 function contains_var(node, var)
     if type(node) ~= "table" then return false end
     if node.type == "variable" and node.name == var then return true end
@@ -31,20 +261,18 @@ function contains_var(node, var)
     end
     return false
 end
- 
--- Basic sanity checks for node identity
+
 local function isNum(ast)
     return ast and ast.type == "number"
 end
+
 local function isVar(ast, v)
     return ast and ast.type == "variable" and (not v or ast.name == v)
 end
 
--- Ensure parser and simplify are loaded
 local parser = rawget(_G, "parser") or require("parser")
 local simplify = rawget(_G, "simplify") or require("simplify")
 
--- Deep copy for ASTs
 local function deepCopy(obj)
     if type(obj) ~= "table" then return obj end
     local res = {}
@@ -52,111 +280,31 @@ local function deepCopy(obj)
     return res
 end
 
--- Simple AST pretty printer (now with 100% less existential crisis)
-local function astToString(ast)
-    if not ast then return "nil" end
-    if type(ast) == "number" then return tostring(ast) end
-    if type(ast) == "string" then return ast end
-    if type(ast) ~= "table" then return tostring(ast) end
-    
-    if ast.type == "number" then return tostring(ast.value) end
-    if ast.type == "variable" then return ast.name end
-    if ast.type == "symbol" then return ast.name end
-    
-    -- Handle both old-style (left/right) and new-style (args array) structures
-    if ast.type == "add" then 
-        if ast.args then
-            local parts = {}
-            for _, arg in ipairs(ast.args) do
-                table.insert(parts, astToString(arg))
-            end
-            return "(" .. table.concat(parts, "+") .. ")"
-        else
-            return "(" .. astToString(ast.left) .. "+" .. astToString(ast.right) .. ")"
-        end
-    end
-    
-    if ast.type == "sub" then 
-        if ast.args then
-            local parts = {}
-            for i, arg in ipairs(ast.args) do
-                if i == 1 then
-                    table.insert(parts, astToString(arg))
-                else
-                    table.insert(parts, "-" .. astToString(arg))
-                end
-            end
-            return "(" .. table.concat(parts, "") .. ")"
-        else
-            return "(" .. astToString(ast.left) .. "-" .. astToString(ast.right) .. ")"
-        end
-    end
-    
-    if ast.type == "mul" then 
-        if ast.args then
-            local parts = {}
-            for _, arg in ipairs(ast.args) do
-                table.insert(parts, astToString(arg))
-            end
-            return table.concat(parts, "*")
-        else
-            return astToString(ast.left) .. "*" .. astToString(ast.right)
-        end
-    end
-    
-    if ast.type == "div" then return astToString(ast.left) .. "/" .. astToString(ast.right) end
-    if ast.type == "power" or ast.type == "pow" then 
-        -- Handle both possible field names because apparently consistency is optional
-        local base = ast.left or ast.base
-        local exp = ast.right or ast.exp or ast.exponent
-        return astToString(base) .. "^" .. astToString(exp)
-    end
-    if ast.type == "neg" then 
-        local inner = ast.arg or ast.value
-        return "-(" .. astToString(inner) .. ")" 
-    end
-    if ast.type == "func" then
-        local argstrs = {}
-        for _, arg in ipairs(ast.args or {}) do
-            table.insert(argstrs, astToString(arg))
-        end
-        return ast.name .. "(" .. table.concat(argstrs, ",") .. ")"
-    end
-    if ast.type == "eq" or ast.type == "equation" then 
-        return astToString(ast.left) .. " = " .. astToString(ast.right) 
-    end
-    if ast.type == "pm" then
-        return "(" .. astToString(ast.left) .. " ± " .. astToString(ast.right) .. ")"
-    end
-    
-    -- Instead of giving up like a quitter, let's be more informative
-    return "UNKNOWN[" .. (ast.type or "no_type") .. "]"
-end
-
--- CORRECTED polynomial coefficient extraction
-local function polyCoeffs(ast, var, maxdeg)
+-- Enhanced polynomial coefficient extraction with steps
+local function polyCoeffs(ast, var, maxdeg, steps)
     local coeffs = {}
+    
+    -- Only add this step for non-trivial equations
+    if steps and (not _G.suppress_basic_steps) then
+        table.insert(steps, { description = "Extracting polynomial coefficients from: " .. format_expr(ast) })
+    end
 
-    print("[polyCoeffs] input AST:", astToString(ast))
-
-    -- Force canonical expansion to help coefficient extraction
     if simplify and simplify.simplify then
         ast = simplify.simplify(ast)
-        print("[polyCoeffs] after simplification:", astToString(ast))
+        if steps and (not _G.suppress_basic_steps) then
+            table.insert(steps, { description = "After simplification: " .. format_expr(ast) })
+        end
     end
 
-    -- Helper: robustly get left/right or base/exp
     local function getBaseExp(node)
         local base = node.left or node.base
         local exp = node.right or node.exp
         return base, exp
     end
 
-    -- Recursively walk the AST to extract polynomial terms
     local function walk(node, sign)
         sign = sign or 1
         if not node then return end
-        print("[polyCoeffs][walk] node type:", node.type, "node:", astToString(node), "sign:", sign)
 
         if node.type == "add" then
             local children = node.args or { node.left, node.right }
@@ -170,52 +318,38 @@ local function polyCoeffs(ast, var, maxdeg)
                 walk(children[i], -sign)
             end
         elseif node.type == "mul" then
-            -- Try to find a polynomial term: coeff * var^deg
             local children = node.args or { node.left, node.right }
             local coeff = sign
             local var_power = 0
             local unknown = false
-            print("[polyCoeffs][mul] processing multiplication with", #children, "children")
+            
             for j, child in ipairs(children) do
-                print("[polyCoeffs][mul] child", j, ":", astToString(child), "type:", child.type)
-                -- Check for variable, power, or constant
                 if isNum(child) then
-                    print("[polyCoeffs][mul] found number:", child.value)
                     coeff = coeff * child.value
                 elseif isVar(child, var) then
-                    print("[polyCoeffs][mul] found variable:", child.name)
                     var_power = var_power + 1
                 elseif (child.type == "power" or child.type == "pow") then
                     local base, exp = getBaseExp(child)
-                    print("[polyCoeffs][mul] found power: base=", astToString(base), "exp=", astToString(exp))
                     if isVar(base, var) and isNum(exp) then
-                        print("[polyCoeffs][mul] power of variable:", exp.value)
                         var_power = var_power + exp.value
                     else
-                        print("[polyCoeffs][mul] non-polynomial power, skipping")
                         unknown = true
                         break
                     end
                 else
-                    -- If the term contains the variable in a non-polynomial way, skip
                     if contains_var(child, var) then
-                        print("[polyCoeffs][mul] child contains variable non-polynomially, skipping")
                         unknown = true
                         break
                     else
-                        -- treat as numeric factor if possible
                         local val
                         if isNum(child) then 
                             val = child.value
-                            print("[polyCoeffs][mul] treating as numeric factor:", val)
                         elseif child.type == "neg" and isNum(child.arg or child.value) then 
                             val = -(child.arg or child.value).value
-                            print("[polyCoeffs][mul] treating as negative factor:", val)
                         end
                         if val then
                             coeff = coeff * val
                         else
-                            print("[polyCoeffs][mul] unknown non-variable term, skipping")
                             unknown = true
                             break
                         end
@@ -224,114 +358,112 @@ local function polyCoeffs(ast, var, maxdeg)
             end
             if not unknown then
                 coeffs[var_power] = (coeffs[var_power] or 0) + coeff
-                print(string.format("[polyCoeffs][mul] Detected term: coeff=%s degree=%s", tostring(coeff), tostring(var_power)))
-            else
-                print("[polyCoeffs][mul] Skipped non-polynomial term:", astToString(node))
             end
         elseif (node.type == "power" or node.type == "pow") then
             local base, exp = getBaseExp(node)
             if isVar(base, var) and isNum(exp) then
                 coeffs[exp.value] = (coeffs[exp.value] or 0) + sign
-                print(string.format("[polyCoeffs][pow] Detected term: coeff=%s degree=%s", tostring(sign), tostring(exp.value)))
-            else
-                print("[polyCoeffs][pow] Skipped non-polynomial power:", astToString(node))
             end
         elseif isVar(node, var) then
             coeffs[1] = (coeffs[1] or 0) + sign
-            print(string.format("[polyCoeffs][var] Detected term: coeff=%s degree=1", tostring(sign)))
         elseif isNum(node) then
             coeffs[0] = (coeffs[0] or 0) + (sign * node.value)
-            print(string.format("[polyCoeffs][num] Detected term: coeff=%s degree=0", tostring(sign * node.value)))
         else
-            -- Try to handle negative nodes: -(...)
             if node.type == "neg" then
                 local inner = node.arg or node.value
-                print("[polyCoeffs] handling negation of:", astToString(inner))
                 walk(inner, -sign)
-            else
-                print("[polyCoeffs] Skipped unknown node:", astToString(node))
             end
         end
     end
 
     walk(ast)
-    print("[polyCoeffs] coeffs table:")
-    for deg, coeff in pairs(coeffs) do
-        print("  degree", deg, "=>", coeff)
+    
+    if steps and (not _G.suppress_basic_steps) then
+        local coeff_strs = {}
+        for deg = 4, 0, -1 do
+            if coeffs[deg] and coeffs[deg] ~= 0 then
+                local coeff_val = coeffs[deg]
+                if deg == 0 then
+                    table.insert(coeff_strs, tostring(coeff_val))
+                elseif deg == 1 then
+                    if coeff_val == 1 then
+                        table.insert(coeff_strs, var)
+                    elseif coeff_val == -1 then
+                        table.insert(coeff_strs, "-" .. var)
+                    else
+                        table.insert(coeff_strs, coeff_val .. var)
+                    end
+                else
+                    if coeff_val == 1 then
+                        table.insert(coeff_strs, var .. "^" .. deg)
+                    elseif coeff_val == -1 then
+                        table.insert(coeff_strs, "-" .. var .. "^" .. deg)
+                    else
+                        table.insert(coeff_strs, coeff_val .. var .. "^" .. deg)
+                    end
+                end
+            end
+        end
+        if #coeff_strs > 0 then
+            table.insert(steps, { description = "Identified polynomial: " .. table.concat(coeff_strs, " + "):gsub("%+ %-", "- ") .. " = 0" })
+        end
+        
+        local coeff_list = {}
+        for deg = 0, 4 do
+            if coeffs[deg] then
+                table.insert(coeff_list, "a" .. deg .. " = " .. coeffs[deg])
+            end
+        end
+        if #coeff_list > 0 then
+            table.insert(steps, { description = "Coefficients: " .. table.concat(coeff_list, ", ") })
+        end
     end
+    
     return coeffs
 end
 
--- MASSIVELY IMPROVED simplifyIfConstant function
 local function simplifyIfConstant(astnode)
-    print("[simplifyIfConstant] Input:", astToString(astnode))
+    if not astnode then return astnode end
     
-    if not astnode then 
-        print("[simplifyIfConstant] Input is nil, returning nil")
-        return astnode 
-    end
-    
-    -- First, try global simplify if available
     if simplify and simplify.simplify then
         local simplified = simplify.simplify(astnode)
-        print("[simplifyIfConstant] After global simplify:", astToString(simplified))
         astnode = simplified
     end
     
-    -- Aggressive constant evaluation
     local function aggressiveEval(node)
-        if not node or type(node) ~= "table" then 
-            print("[aggressiveEval] Non-table node:", tostring(node))
-            return node 
-        end
+        if not node or type(node) ~= "table" then return node end
         
-        print("[aggressiveEval] Processing node type:", node.type, "value:", astToString(node))
+        if node.type == "number" then return node end
         
-        if node.type == "number" then 
-            print("[aggressiveEval] Already a number:", node.value)
-            return node 
-        end
-        
-        -- Handle subtraction: a - b
         if node.type == "sub" and node.left and node.right then
             local left = aggressiveEval(node.left)
             local right = aggressiveEval(node.right)
-            print("[aggressiveEval] Sub: left=", astToString(left), "right=", astToString(right))
             
             if left.type == "number" and right.type == "number" then
-                local result = { type = "number", value = left.value - right.value }
-                print("[aggressiveEval] Sub result:", result.value)
-                return result
+                return { type = "number", value = left.value - right.value }
             end
             
-            -- Handle a - (-b) = a + b
             if right.type == "neg" then
                 local right_inner = right.arg or right.value
-                print("[aggressiveEval] Converting a - (-b) to a + b")
                 return aggressiveEval({ type = "add", args = { left, right_inner } })
             end
             
             return { type = "sub", left = left, right = right }
         end
         
-        -- Handle multiplication with aggressive coefficient extraction
         if node.type == "mul" and node.args then
             local product = 1
             local non_numeric = {}
             
-            print("[aggressiveEval] Mul with", #node.args, "args")
             for i, arg in ipairs(node.args) do
                 local eval_arg = aggressiveEval(arg)
-                print("[aggressiveEval] Mul arg", i, ":", astToString(eval_arg))
                 
                 if eval_arg.type == "number" then
                     product = product * eval_arg.value
-                    print("[aggressiveEval] Accumulated product:", product)
                 elseif eval_arg.type == "neg" then
                     local inner = eval_arg.arg or eval_arg.value
                     if inner.type == "number" then
                         product = product * (-inner.value)
-                        print("[aggressiveEval] Negative number, product:", product)
                     else
                         table.insert(non_numeric, eval_arg)
                     end
@@ -339,8 +471,6 @@ local function simplifyIfConstant(astnode)
                     table.insert(non_numeric, eval_arg)
                 end
             end
-            
-            print("[aggressiveEval] Final product:", product, "non-numeric count:", #non_numeric)
             
             if #non_numeric == 0 then
                 return { type = "number", value = product }
@@ -358,7 +488,6 @@ local function simplifyIfConstant(astnode)
             end
         end
         
-        -- Handle addition
         if node.type == "add" and node.args then
             local sum = 0
             local non_numeric = {}
@@ -390,7 +519,6 @@ local function simplifyIfConstant(astnode)
             end
         end
         
-        -- Handle powers
         if (node.type == "pow" or node.type == "power") then
             local base = aggressiveEval(node.base or node.left)
             local exp = aggressiveEval(node.exp or node.right)
@@ -402,19 +530,17 @@ local function simplifyIfConstant(astnode)
             return { type = node.type, base = base, exp = exp, left = base, right = exp }
         end
         
-        -- Handle negation
         if node.type == "neg" then
             local inner = aggressiveEval(node.arg or node.value)
             if inner.type == "number" then
                 return { type = "number", value = -inner.value }
             end
             if inner.type == "neg" then
-                return inner.arg or inner.value -- Double negative
+                return inner.arg or inner.value
             end
             return { type = "neg", arg = inner }
         end
         
-        -- Handle functions (like sqrt)
         if node.type == "func" and node.args then
             local eval_args = {}
             local all_numeric = true
@@ -447,11 +573,9 @@ local function simplifyIfConstant(astnode)
         return node
     end
     
-    local result = aggressiveEval(astnode)
-    print("[simplifyIfConstant] Final result:", astToString(result))
-    return result
+    return aggressiveEval(astnode)
 end
--- Safe cube root to handle negative numbers
+
 local function cbrt(x)
     if x >= 0 then
         return x^(1/3)
@@ -460,159 +584,191 @@ local function cbrt(x)
     end
 end
 
-local function matchQuadraticEq(eq, var)
-    print("\n[matchQuadraticEq] ===== QUADRATIC SOLVER DEBUG BEGINS =====")
-    print("[matchQuadraticEq] Input equation:", astToString(eq))
+-- Linear equation solver with steps
+local function matchLinearEq(eq, var, steps)
+    if eq.type ~= "equation" then return nil end
     
-    -- Accept forms: ax^2 + bx + c = d
-    if eq.type ~= "equation" then 
-        print("[matchQuadraticEq] Not an equation, aborting")
-        return nil 
-    end
+    table.insert(steps, { description = "Solving linear equation: " .. format_expr(eq) })
     
     local l, r = eq.left, eq.right
-    print("[matchQuadraticEq] Left side:", astToString(l))
-    print("[matchQuadraticEq] Right side:", astToString(r))
+    local norm = { type="sub", left=l, right=r }
     
-    -- Normalize by subtracting right from left: (l - r) = 0
-    local norm = { type = "sub", left = l, right = r }
-    print("[matchQuadraticEq] Normalized form:", astToString(norm))
-    
-    local coeffs = polyCoeffs(norm, var)
-    if not coeffs then 
-        print("[matchQuadraticEq] Failed to extract coefficients")
-        return nil 
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Rearranging to standard form: " .. format_expr(norm) .. " = 0" })
     end
+    
+    local coeffs = polyCoeffs(norm, var, nil, steps)
+    if not coeffs then return nil end
+    
+    local a = coeffs[1] or 0
+    local b = coeffs[0] or 0
+    
+    if coeffs[2] and coeffs[2] ~= 0 then return nil end
+    if a == 0 then return nil end
+    
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "For linear equation a" .. var .. " + b = 0, where a = " .. a .. " and b = " .. b })
+        table.insert(steps, { description = "Solution: " .. var .. " = -b/a = -(" .. b .. ")/(" .. a .. ")" })
+    end
+    
+    local solution_value = -b / a
+    table.insert(steps, { description = var .. " = " .. solution_value })
+    
+    return ast.number(solution_value)
+end
+
+-- Quadratic equation solver with detailed steps
+local function matchQuadraticEq(eq, var, steps)
+    if eq.type ~= "equation" then return nil end
+    
+    table.insert(steps, { description = "Solving quadratic equation: " .. format_expr(eq) })
+    
+    local l, r = eq.left, eq.right
+    local norm = { type = "sub", left = l, right = r }
+    
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Rearranging to standard form: " .. format_expr(norm) .. " = 0" })
+    end
+    
+    local coeffs = polyCoeffs(norm, var, nil, steps)
+    if not coeffs then return nil end
     
     local a = coeffs[2] or 0
     local b = coeffs[1] or 0
     local c = coeffs[0] or 0
 
-    -- PATCH: Handle quadratic in x^2 (biquadratic/quartic with no odd powers)
+    -- Handle biquadratic case (quartic with only even powers)
     local a4 = coeffs[4] or 0
     local a2 = coeffs[2] or 0
     local a0 = coeffs[0] or 0
     local a3 = coeffs[3] or 0
     local a1 = coeffs[1] or 0
+    
     if a4 ~= 0 and a2 ~= 0 and a0 ~= 0 and (a3 == 0 or not a3) and (a1 == 0 or not a1) then
-        print("[matchQuadraticEq] Detected quadratic in x^2 (biquadratic)")
-        -- Solve y^2 + b y + c = 0, where y = x^2
-        local y_a = a4
-        local y_b = a2
-        local y_c = a0
-        -- Use quadratic formula for y
-        local disc = y_b^2 - 4 * y_a * y_c
+        table.insert(steps, { description = "This is a biquadratic equation (quadratic in " .. var .. "²)" })
+        table.insert(steps, { description = "Let y = " .. var .. "², then: " .. a4 .. "y² + " .. a2 .. "y + " .. a0 .. " = 0" })
+        
+        local disc = a2^2 - 4 * a4 * a0
+        table.insert(steps, { description = "Discriminant: Δ = b² - 4ac = (" .. a2 .. ")² - 4(" .. a4 .. ")(" .. a0 .. ") = " .. disc })
+        
         if disc < 0 and not _G.showComplex then
-            print("[matchQuadraticEq] No real solutions for biquadratic")
+            table.insert(steps, { description = "Discriminant < 0, no real solutions" })
             return nil
         end
+        
         local sqrt_disc = math.sqrt(math.abs(disc))
-        local y1 = (-y_b + sqrt_disc) / (2 * y_a)
-        local y2 = (-y_b - sqrt_disc) / (2 * y_a)
+        local y1 = (-a2 + sqrt_disc) / (2 * a4)
+        local y2 = (-a2 - sqrt_disc) / (2 * a4)
+        
+        table.insert(steps, { description = "Solutions for y: y₁ = " .. y1 .. ", y₂ = " .. y2 })
+        table.insert(steps, { description = "Since y = " .. var .. "², we have " .. var .. " = ±√y for each positive y" })
+        
         local results = {}
-        -- For each y, x = ±sqrt(y)
-        for _, yval in ipairs({y1, y2}) do
+        for i, yval in ipairs({y1, y2}) do
             if not _G.showComplex and yval < 0 then
-                -- skip this yval, do nothing
+                table.insert(steps, { description = "y" .. i .. " = " .. yval .. " < 0, skipping (no real square roots)" })
             else
                 if _G.showComplex then
-                    -- Symbolic: always show radicals, even for negatives (so roots may be imaginary)
                     local x_pos = { type = "func", name = "sqrt", args = { { type = "number", value = yval } } }
                     local x_neg = { type = "neg", arg = x_pos }
                     table.insert(results, x_pos)
                     table.insert(results, x_neg)
+                    table.insert(steps, { description = "From y" .. i .. " = " .. yval .. ": " .. var .. " = ±√(" .. yval .. ")" })
                 else
-                    -- Only real roots, as decimal numbers
                     if yval >= 0 then
                         local root = math.sqrt(yval)
                         table.insert(results, { type = "number", value = root })
                         table.insert(results, { type = "number", value = -root })
+                        table.insert(steps, { description = "From y" .. i .. " = " .. yval .. ": " .. var .. " = ±" .. root })
                     end
                 end
             end
         end
-        print("[matchQuadraticEq] Biquadratic roots (x):", table.concat(
-            (function() local t = {}; for _,r in ipairs(results) do table.insert(t, astToString(r)); end; return t end)(),
-            ", "))
         return results
     end
     
-    print("[matchQuadraticEq] Extracted coefficients: a=", a, "b=", b, "c=", c)
+    if a == 0 then return nil end
+
+    -- Check if this is a trivial quadratic (ax² + c = 0)
+    local is_trivial = (b == 0)
     
-    if a == 0 then 
-        print("[matchQuadraticEq] Not quadratic (a=0), aborting")
-        return nil 
+    if not is_trivial and not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Standard quadratic form: a" .. var .. "² + b" .. var .. " + c = 0" })
+        table.insert(steps, { description = "Where a = " .. a .. ", b = " .. b .. ", c = " .. c })
+    elseif is_trivial then
+        -- For trivial quadratics, just show the key step
+        table.insert(steps, { description = var .. "² = " .. (-c/a) })
     end
-
-    -- Helper: Create proper AST number nodes
-    local function makeNum(val)
-        return { type = "number", value = val }
+    
+    if is_trivial then
+        -- Direct solution for ax² + c = 0
+        local val = -c/a
+        if val < 0 and not _G.showComplex then
+            table.insert(steps, { description = "No real solutions (negative square)" })
+            return nil
+        end
+        
+        local sqrt_val = math.sqrt(math.abs(val))
+        table.insert(steps, { description = var .. " = ±" .. sqrt_val })
+        
+        local makeNum = function(v) return { type = "number", value = v } end
+        return { makeNum(sqrt_val), makeNum(-sqrt_val) }
     end
-
-    -- Build coefficient nodes
+    
+    -- Calculate discriminant
+    local discriminant = b^2 - 4*a*c
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Discriminant: Δ = b² - 4ac = (" .. b .. ")² - 4(" .. a .. ")(" .. c .. ")" })
+        table.insert(steps, { description = "Δ = " .. b^2 .. " - " .. (4*a*c) .. " = " .. discriminant })
+    end
+    
+    if discriminant < 0 and not _G.showComplex then
+        table.insert(steps, { description = "Since Δ < 0, there are no real solutions" })
+        return nil
+    elseif discriminant == 0 then
+        table.insert(steps, { description = "Since Δ = 0, there is one repeated real solution" })
+    elseif discriminant > 0 then
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "Since Δ > 0, there are two distinct real solutions" })
+        end
+    end
+    
+    -- Apply quadratic formula
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Using quadratic formula: " .. var .. " = (-b ± √Δ)/(2a)" })
+        table.insert(steps, { description = var .. " = (-(" .. b .. ") ± √(" .. discriminant .. "))/(2·" .. a .. ")" })
+        table.insert(steps, { description = var .. " = (" .. (-b) .. " ± √(" .. discriminant .. "))/" .. (2*a) })
+    end
+    
+    -- Build solutions
+    local makeNum = function(val) return { type = "number", value = val } end
     local a_node = makeNum(a)
     local b_node = makeNum(b)
     local c_node = makeNum(c)
     local four_node = makeNum(4)
     local two_node = makeNum(2)
 
-    print("[matchQuadraticEq] Created coefficient nodes:")
-    print("  a_node:", astToString(a_node))
-    print("  b_node:", astToString(b_node))
-    print("  c_node:", astToString(c_node))
-
-    -- Compute discriminant: D = b^2 - 4*a*c
     local b_sq = { type = "power", left = b_node, right = makeNum(2) }
     local four_ac = { type = "mul", args = { four_node, a_node, c_node } }
     local disc = { type = "sub", left = b_sq, right = four_ac }
-
-    print("\n=== DISCRIMINANT DEBUG DISASTER ===")
-    print("b_sq AST:", astToString(b_sq))
-    print("four_ac AST:", astToString(four_ac)) 
-    print("Raw discriminant AST:", astToString(disc))
-
-    -- Always simplify discriminant to a number so sqrt can be clean
     disc = simplifyIfConstant(disc)
-    print("Simplified discriminant AST:", astToString(disc))
-    print("Discriminant type:", disc.type)
-    if disc.type == "number" then 
-        print("Discriminant value:", disc.value)
-    else
-        print("Discriminant is NOT a number - mathematical tragedy continues")
-    end
-    print("=== END OF DISCRIMINANT SUFFERING ===\n")
 
-    -- Build sqrt(D) and simplify it
     local sqrt_disc = { type = "func", name = "sqrt", args = { disc } }
     local sqrt_disc_simp = simplifyIfConstant(sqrt_disc)
 
-    print("Raw sqrt AST:", astToString(sqrt_disc))
-    print("Simplified sqrt AST:", astToString(sqrt_disc_simp))
-
-    -- Compute -b
     local minus_b = { type = "neg", arg = b_node }
     minus_b = simplifyIfConstant(minus_b)
-    print("Minus b:", astToString(minus_b))
 
-    -- Compute denominator 2a
     local denom = { type = "mul", args = { two_node, a_node } }
     denom = simplifyIfConstant(denom)
-    print("Denominator 2a:", astToString(denom))
 
-    -- Build the two solutions: (-b ± √D) / 2a
     local numerator_plus = { type = "add", args = { minus_b, sqrt_disc_simp } }
     local numerator_minus = { type = "sub", left = minus_b, right = sqrt_disc_simp }
 
     local plus_case = { type = "div", left = numerator_plus, right = denom }
     local minus_case = { type = "div", left = numerator_minus, right = denom }
 
-    print("Before final simplification:")
-    print("  plus_case:", astToString(plus_case))
-    print("  minus_case:", astToString(minus_case))
-
-    -- CRITICALLY IMPORTANT: Simplify the solutions FIRST
     if _G.showComplex then
-        -- Preserve symbolic radicals and fractions
         plus_case = simplify.simplify(plus_case)
         minus_case = simplify.simplify(minus_case)
     else
@@ -620,70 +776,74 @@ local function matchQuadraticEq(eq, var)
         minus_case = simplifyIfConstant(minus_case)
     end
 
-    print("After final simplification:")
-    print("  plus_case:", astToString(plus_case))
-    print("  minus_case:", astToString(minus_case))
+    local sqrt_val = math.sqrt(math.abs(discriminant))
+    local sol1 = (-b + sqrt_val) / (2*a)
+    local sol2 = (-b - sqrt_val) / (2*a)
+    
+    table.insert(steps, { description = var .. "₁ = (" .. (-b) .. " + " .. sqrt_val .. ")/" .. (2*a) .. " = " .. sol1 })
+    table.insert(steps, { description = var .. "₂ = (" .. (-b) .. " - " .. sqrt_val .. ")/" .. (2*a) .. " = " .. sol2 })
 
-    -- THE ACTUAL FIX: Always return the simplified separate roots
-    -- Because nobody wants to see mathematical hieroglyphics when the answer is clean
-    print("[matchQuadraticEq] Returning simplified separate roots because we're not savages")
-    print("[matchQuadraticEq] Final answers: x =", astToString(plus_case), "and x =", astToString(minus_case))
-    print("[matchQuadraticEq] ===== QUADRATIC SOLVER DEBUG ENDS (SUCCESSFULLY) =====\n")
     return { plus_case, minus_case }
 end
 
--- Cubic equation matcher (debugging version)
-local function matchCubicEq(eq, var)
-    print("\n[matchCubicEq] ===== CUBIC SOLVER DEBUG BEGINS =====")
-    print("[matchCubicEq] Input equation:", astToString(eq))
+-- Cubic equation solver with steps  
+local function matchCubicEq(eq, var, steps)
+    if eq.type ~= "equation" then return nil end
 
-    if eq.type ~= "equation" then 
-        print("[matchCubicEq] Not an equation, aborting")
-        return nil 
-    end
+    table.insert(steps, { description = "Solving cubic equation: " .. format_expr(eq) })
 
     local l, r = eq.left, eq.right
     local norm = { type = "sub", left = l, right = r }
-    print("[matchCubicEq] Normalized form:", astToString(norm))
-
-    local coeffs = polyCoeffs(norm, var)
-    if not coeffs then 
-        print("[matchCubicEq] Failed to extract coefficients")
-        return nil 
+    
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Rearranging to standard form: " .. format_expr(norm) .. " = 0" })
     end
+
+    local coeffs = polyCoeffs(norm, var, nil, steps)
+    if not coeffs then return nil end
 
     local a = coeffs[3] or 0
     local b = coeffs[2] or 0
     local c = coeffs[1] or 0
     local d = coeffs[0] or 0
 
-    print(string.format("[matchCubicEq] Extracted coefficients: a=%s, b=%s, c=%s, d=%s", a, b, c, d))
+    if a == 0 then return nil end
 
-    if a == 0 then
-        print("[matchCubicEq] Not a cubic (a=0), aborting")
-        return nil
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Standard cubic form: a" .. var .. "³ + b" .. var .. "² + c" .. var .. " + d = 0" })
+        table.insert(steps, { description = "Where a = " .. a .. ", b = " .. b .. ", c = " .. c .. ", d = " .. d })
     end
 
+    -- Reduce to depressed cubic
     local delta = b / (3 * a)
-    print("[matchCubicEq] Depressed substitution delta =", delta)
-
+    table.insert(steps, { description = "Converting to depressed cubic using substitution " .. var .. " = t + " .. delta })
+    
     local p = (3*a*c - b^2) / (3*a^2)
     local q = (2*b^3 - 9*a*b*c + 27*a^2*d) / (27*a^3)
 
-    print(string.format("[matchCubicEq] Depressed cubic: t^3 + %.6f*t + %.6f = 0", p, q))
+    table.insert(steps, { description = "Depressed cubic: t³ + pt + q = 0" })
+    table.insert(steps, { description = "Where p = " .. string.format("%.6f", p) .. " and q = " .. string.format("%.6f", q) })
 
     local discriminant = (q/2)^2 + (p/3)^3
-    print("[matchCubicEq] Discriminant =", discriminant)
+    table.insert(steps, { description = "Discriminant: Δ = (q/2)² + (p/3)³ = " .. string.format("%.6f", discriminant) })
 
     local roots = {}
 
     if discriminant > 0 then
-        print("[matchCubicEq] One real root, two complex roots (explicit complex form)")
+        table.insert(steps, { description = "Since Δ > 0: one real root and two complex conjugate roots" })
 
         local sqrt_disc = math.sqrt(discriminant)
         local u = cbrt(-q/2 + sqrt_disc)
         local v = cbrt(-q/2 - sqrt_disc)
         local t1 = u + v
+
+        table.insert(steps, { description = "Using Cardano's formula:" })
+        table.insert(steps, { description = "u = ∛(-q/2 + √Δ) = " .. string.format("%.6f", u) })
+        table.insert(steps, { description = "v = ∛(-q/2 - √Δ) = " .. string.format("%.6f", v) })
+        table.insert(steps, { description = "t₁ = u + v = " .. string.format("%.6f", t1) })
+
+        local x1 = t1 - delta
+        table.insert(steps, { description = "Real root: " .. var .. "₁ = t₁ - " .. delta .. " = " .. string.format("%.6f", x1) })
 
         if _G.showComplex then
             local symbolic_root = {
@@ -727,33 +887,25 @@ local function matchCubicEq(eq, var)
             }
             table.insert(roots, simplifyIfConstant(symbolic_root))
         else
-            local x1 = t1 - delta
             table.insert(roots, { type = "number", value = x1 })
         end
 
-        -- Complex conjugate pair: real = -t1/2 - delta, imag = ± sqrt(3)*(u - v)/2
         local real_part = (-t1/2) - delta
         local imag_part = math.sqrt(3)*(u - v)/2
+
+        table.insert(steps, { description = "Complex roots: " .. var .. "₂,₃ = " .. string.format("%.6f", real_part) .. " ± " .. string.format("%.6f", imag_part) .. "i" })
 
         if _G.showComplex then
             local sqrt3 = { type = "func", name = "sqrt", args = { { type = "number", value = 3 } } }
             local symbolic_root2 = {
                 type = "add",
                 args = {
-                    {
-                        type = "div",
-                        left = { type = "neg", arg = { type = "number", value = t1 } },
-                        right = { type = "number", value = 2 }
-                    },
+                    { type = "number", value = real_part },
                     {
                         type = "mul",
                         args = {
                             sqrt3,
-                            {
-                                type = "div",
-                                left = { type = "number", value = (u - v) },
-                                right = { type = "number", value = 2 }
-                            },
+                            { type = "number", value = (u - v) / 2 },
                             { type = "symbol", name = "i" }
                         }
                     }
@@ -762,20 +914,12 @@ local function matchCubicEq(eq, var)
             local symbolic_root3 = {
                 type = "add",
                 args = {
-                    {
-                        type = "div",
-                        left = { type = "neg", arg = { type = "number", value = t1 } },
-                        right = { type = "number", value = 2 }
-                    },
+                    { type = "number", value = real_part },
                     {
                         type = "mul",
                         args = {
-                            { type = "neg", arg = { type = "func", name = "sqrt", args = { { type = "number", value = 3 } } } },
-                            {
-                                type = "div",
-                                left = { type = "number", value = (u - v) },
-                                right = { type = "number", value = 2 }
-                            },
+                            { type = "neg", arg = sqrt3 },
+                            { type = "number", value = (u - v) / 2 },
                             { type = "symbol", name = "i" }
                         }
                     }
@@ -801,289 +945,113 @@ local function matchCubicEq(eq, var)
             table.insert(roots, simplifyIfConstant(root2))
             table.insert(roots, simplifyIfConstant(root3))
         end
+
     elseif discriminant == 0 then
-        print("[matchCubicEq] Triple or double real roots")
+        table.insert(steps, { description = "Since Δ = 0: repeated real roots" })
+        
         local u = cbrt(-q/2)
         local t1 = 2*u
         local t2 = -u
 
-        -- New block: Properly distinguish between triple and double roots
+        local x1 = t1 - delta
+        local x2 = t2 - delta
+
+        table.insert(steps, { description = "Using the double root formula:" })
+        table.insert(steps, { description = "t₁ = 2∛(-q/2) = " .. string.format("%.6f", t1) })
+        table.insert(steps, { description = "t₂ = -∛(-q/2) = " .. string.format("%.6f", t2) })
+
         local precision = _G.precision or _G.precision_digits or 4
         local function roundnum(x)
             local mult = 10 ^ precision
             return math.floor(x * mult + 0.5) / mult
         end
 
-        local x1 = roundnum(t1 - delta)
-        local x2 = roundnum(t2 - delta)
+        x1 = roundnum(x1)
+        x2 = roundnum(x2)
 
-        -- Distinguish between single and double roots
         if math.abs(x1 - x2) < 1e-10 then
-            -- Triple root case
+            table.insert(steps, { description = "Triple root: " .. var .. " = " .. x1 .. " (multiplicity 3)" })
             table.insert(roots, { type = "number", value = x1 })
             table.insert(roots, { type = "number", value = x1 })
             table.insert(roots, { type = "number", value = x1 })
         else
-            -- Double root at x2
+            table.insert(steps, { description = "Roots: " .. var .. "₁ = " .. x1 .. ", " .. var .. "₂ = " .. var .. "₃ = " .. x2 .. " (double root)" })
             table.insert(roots, { type = "number", value = x1 })
             table.insert(roots, { type = "number", value = x2 })
             table.insert(roots, { type = "number", value = x2 })
         end
+
     else
-        print("[matchCubicEq] Three distinct real roots (casus irreducibilis)")
+        table.insert(steps, { description = "Since Δ < 0: three distinct real roots (casus irreducibilis)" })
+        table.insert(steps, { description = "Using trigonometric solution method:" })
+        
         local r = math.sqrt(-(p^3) / 27)
         local phi = math.acos(-q / (2 * math.sqrt(-(p^3)/27)))
-        local t1 = 2 * math.sqrt(-qp/3) * math.cos(phi / 3)
+        
+        table.insert(steps, { description = "r = √(-(p³)/27) = " .. string.format("%.6f", r) })
+        table.insert(steps, { description = "φ = arccos(-q/(2r)) = " .. string.format("%.6f", phi) })
+        
+        local t1 = 2 * math.sqrt(-p/3) * math.cos(phi / 3)
         local t2 = 2 * math.sqrt(-p/3) * math.cos((phi + 2*math.pi) / 3)
         local t3 = 2 * math.sqrt(-p/3) * math.cos((phi + 4*math.pi) / 3)
+        
         local x1 = t1 - delta
         local x2 = t2 - delta
         local x3 = t3 - delta
-        -- For three real roots, _G.showComplex not relevant, always real
+        
+        table.insert(steps, { description = "Three real roots:" })
+        table.insert(steps, { description = var .. "₁ = " .. string.format("%.6f", x1) })
+        table.insert(steps, { description = var .. "₂ = " .. string.format("%.6f", x2) })
+        table.insert(steps, { description = var .. "₃ = " .. string.format("%.6f", x3) })
+        
         table.insert(roots, { type = "number", value = x1 })
         table.insert(roots, { type = "number", value = x2 })
         table.insert(roots, { type = "number", value = x3 })
     end
 
-    print("[matchCubicEq] Final roots:")
-    for i, r in ipairs(roots) do
-        print(string.format("  Root %d: %s", i, astToString(r)))
-    end
-
-    print("[matchCubicEq] ===== CUBIC SOLVER DEBUG ENDS =====\n")
     return roots
 end
 
-
-
--- Linear equation matcher: supports ax + b = c, ax = b, x + b = c, x = b
-local function matchLinearEq(eq, var)
-    -- Accept forms: ax + b = c, ax = b, x + b = c, x = b
+-- Quartic equation solver with steps
+local function matchQuarticEq(eq, var, steps)
     if eq.type ~= "equation" then return nil end
-    local l, r = eq.left, eq.right
-    -- If right side is not zero, normalize: (l - r) = 0
-    local norm = { type="sub", left=l, right=r }
-    local coeffs = polyCoeffs(norm, var)
-    if not coeffs then return nil end
-    local a = coeffs[1] or 0
-    local b = coeffs[0] or 0
-    if coeffs[2] and coeffs[2] ~= 0 then return nil end -- Quadratic term present, not linear
-    if a == 0 then return nil end
-    -- Solution is x = -b/a
-    local solution_value = -b / a
-    return ast.number(solution_value)
-end
-
--- Helper to check if an AST node is a constant (number)
-local function is_const(node)
-  return node and node.type == "number"
-end
-
--- Helper for variable test (for base case, mirror old code)
-local function is_var(node)
-  return node and node.type == "variable"
-end
-
--- Helper to copy AST nodes (deep copy)
-local function copy(node)
-  if type(node) ~= "table" then return node end
-  local res = {}
-  for k,v in pairs(node) do res[k] = copy(v) end
-  return res
-end
-
--- Main solve function
-function solve(input_expr, var)
-    print("\n[solve] ===== MAIN SOLVE FUNCTION BEGINS =====")
-    print("[solve] Input expression:", tostring(input_expr))
-    print("[solve] Variable:", tostring(var))
     
-    local parser = rawget(_G, "parser") or require("parser")
-    local ast_mod = rawget(_G, "ast") or require("ast")
-    local simplify = rawget(_G, "simplify") or require("simplify")
-
-    local expr = input_expr
-    if type(expr) == "string" then
-        print("[solve] Parsing string input:", expr)
-        -- Insert '*' between a digit and a letter or digit and '('
-        local s = expr
-        s = s:gsub("(%d)(%a)", "%1*%2")
-        s = s:gsub("(%d)(%()", "%1*%2")
-        print("[solve] After implicit multiplication:", s)
-        expr = parser.parse(s)
-    end
-    if not expr then
-        error(errors.invalid("solve", "parse failed, got nil AST"))
-    end
+    table.insert(steps, { description = "Solving quartic equation: " .. format_expr(eq) })
     
-    print("[solve] Parsed AST:", astToString(expr))
-
-    var = var or (function()
-        -- try to guess variable
-        local function findVar(node)
-            if not node or type(node) ~= "table" then return nil end
-            if node.type == "variable" then return node.name end
-            for _, k in ipairs { "left", "right", "value", "args" } do
-                local child = node[k]
-                if child then
-                    if type(child) == "table" and not child[1] then
-                        local res = findVar(child)
-                        if res then return res end
-                    elseif type(child) == "table" then
-                        for _, v in ipairs(child) do
-                            local res = findVar(v)
-                            if res then return res end
-                        end
-                    end
-                end
-            end
-            return nil
-        end
-        return findVar(expr.left) or findVar(expr.right) or "x"
-    end)()
-
-    print("[solve] Using variable:", var)
-
-    -- Canonicalize equation as eq-node (lhs = rhs), or expr = 0
-    if expr.type == "equation" then
-        expr = ast_mod.eq(expr.left, expr.right)
-    elseif expr.type ~= "equation" then
-        expr = ast_mod.eq(expr, ast_mod.number(0))
-    end
-
-    print("[solve] Canonicalized equation:", astToString(expr))
-
-    -- Always simplify first
-    expr = simplify.simplify(expr)
-    print("[solve] After initial simplification:", astToString(expr))
-
-    -- Try all known matchers
-    local diff = simplify.simplify(ast_mod.sub(expr.left, expr.right))
-    local fallback_eq = ast_mod.eq(diff, ast_mod.number(0))
-    
-    print("[solve] Normalized difference:", astToString(diff))
-    print("[solve] Fallback equation:", astToString(fallback_eq))
-
-    -- Find polynomial degree
-    local coeffs = polyCoeffs(fallback_eq.left, var)
-    local maxdeg = 0
-    for d, _ in pairs(coeffs) do
-        if d > maxdeg then maxdeg = d end
-    end
-
-    if maxdeg == 1 then
-        local ans_lin = matchLinearEq(fallback_eq, var)
-        if ans_lin then
-            print("[solve] Linear solution found:", astToString(ans_lin))
-            local rhs
-            if type(ans_lin) ~= "table" then
-                rhs = ast_mod.number(ans_lin)
-            else
-                rhs = ans_lin
-            end
-            local eq_ast = ast_mod.eq(ast_mod.symbol(var), rhs)
-            local simplified_eq = simplify.simplify(eq_ast)
-            local result = astToString(simplified_eq)
-            if simplified_eq and simplified_eq.type == "sub"
-                and simplified_eq.left and simplified_eq.right
-                and simplified_eq.left.type == "variable"
-                and simplified_eq.right.type == "number" then
-                result = simplified_eq.left.name .. " = " .. tostring(simplified_eq.right.value)
-            end
-            print("[solve] Final linear result:", result)
-            if type(var) == "table" and type(var.store) == "function" then
-                var.store("last_solve_mode", _G.lastSolveModeFlag or (_G.showComplex and "complex" or "decimal"))
-            end
-            return result
-        end
-    elseif maxdeg == 2 then
-        local ans_quad = matchQuadraticEq(fallback_eq, var)
-        if ans_quad then
-            print("[solve] Quadratic solution found")
-            local pieces = {}
-            for i, root in ipairs(ans_quad) do
-                table.insert(pieces, var .. " = " .. astToString(root))
-            end
-            local result = table.concat(pieces, ", ")
-            print("[solve] Final quadratic result:", result)
-            if type(var) == "table" and type(var.store) == "function" then
-                var.store("last_solve_mode", _G.lastSolveModeFlag or (_G.showComplex and "complex" or "decimal"))
-            end
-            return result
-        end
-    elseif maxdeg == 3 then
-        local ans_cubic = matchCubicEq(fallback_eq, var)
-        if ans_cubic then
-            print("[solve] Cubic solution found")
-            local result = {}
-            for i, root in ipairs(ans_cubic) do
-                table.insert(result, var .. " = " .. astToString(root))
-            end
-            local final_result = table.concat(result, ", ")
-            print("[solve] Final cubic result:", final_result)
-            if type(var) == "table" and type(var.store) == "function" then
-                var.store("last_solve_mode", _G.lastSolveModeFlag or (_G.showComplex and "complex" or "decimal"))
-            end
-            return final_result
-        end
-    elseif maxdeg == 4 then
-        local ans_quartic = matchQuarticEq(fallback_eq, var)
-        if ans_quartic then
-            print("[solve] Quartic solution found")
-            local result = {}
-            for i, root in ipairs(ans_quartic) do
-                table.insert(result, var .. " = " .. astToString(root))
-            end
-            local final_result = table.concat(result, ", ")
-            print("[solve] Final quartic result:", final_result)
-            if type(var) == "table" and type(var.store) == "function" then
-                var.store("last_solve_mode", _G.lastSolveModeFlag or (_G.showComplex and "complex" or "decimal"))
-            end
-            return final_result
-        end
-    end
-
-
-    print("[solve] No analytical solution found")
-    return "No solution found"
-end
-
--- Quartic equation matcher: ax^4 + bx^3 + cx^2 + dx + e = 0
-local function matchQuarticEq(eq, var)
-    print("\n[matchQuarticEq] ===== QUARTIC SOLVER DEBUG BEGINS =====")
-    if eq.type ~= "equation" then
-        print("[matchQuarticEq] Not an equation, aborting")
-        return nil
-    end
     local l, r = eq.left, eq.right
     local norm = { type = "sub", left = l, right = r }
-    print("[matchQuarticEq] Normalized form:", astToString(norm))
-    local coeffs = polyCoeffs(norm, var)
-    if not coeffs then print("[matchQuarticEq] Failed to extract coefficients") return nil end
+    
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Rearranging to standard form: " .. format_expr(norm) .. " = 0" })
+    end
+    
+    local coeffs = polyCoeffs(norm, var, nil, steps)
+    if not coeffs then return nil end
+    
     local a = coeffs[4] or 0
     local b = coeffs[3] or 0
     local c = coeffs[2] or 0
     local d = coeffs[1] or 0
     local e = coeffs[0] or 0
-    print(string.format("[matchQuarticEq] Extracted coefficients: a=%s, b=%s, c=%s, d=%s, e=%s", a, b, c, d, e))
-    if a == 0 then print("[matchQuarticEq] Not quartic (a=0), aborting") return nil end
+    
+    if a == 0 then return nil end
 
-    -- Attempt to factor as two quadratics: (x^2 + px + q)(x^2 + rx + s) = 0
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Standard quartic form: a" .. var .. "⁴ + b" .. var .. "³ + c" .. var .. "² + d" .. var .. " + e = 0" })
+        table.insert(steps, { description = "Where a = " .. a .. ", b = " .. b .. ", c = " .. c .. ", d = " .. d .. ", e = " .. e })
+    end
+
+    -- Try factoring first
     local function try_quartic_factoring(a, b, c, d, e)
-        -- Only attempt if all coefficients are integers (to avoid floating imprecision)
         if math.floor(a) ~= a or math.floor(b) ~= b or math.floor(c) ~= c or math.floor(d) ~= d or math.floor(e) ~= e then return nil end
-        -- Try to solve: (x^2 + p x + q)(x^2 + r x + s) = ax^4 + bx^3 + cx^2 + dx + e
-        -- This expands to:
-        -- a x^4 + b x^3 + c x^2 + d x + e =
-        -- x^4 + (p + r)x^3 + (q + pr + s)x^2 + (ps + qr)x + qs
-        -- Here, a = 1 assumed (normalize first); else, factor out 'a'
+        
         if a ~= 1 then
             b = b / a; c = c / a; d = d / a; e = e / a
         end
+        
         for p = -10, 10 do for r = -10, 10 do
         for q = -10, 10 do for s = -10, 10 do
             if (p + r == b) and (q + p*r + s == c) and (p*s + q*r == d) and (q*s == e) then
-                -- We found a factorization!
                 return {p=p, q=q, r=r, s=s}
             end
         end end end end
@@ -1092,97 +1060,107 @@ local function matchQuarticEq(eq, var)
 
     local factors = try_quartic_factoring(a, b, c, d, e)
     if factors then
-        print("[matchQuarticEq] Factored as (x^2+"..factors.p.."x+"..factors.q..")*(x^2+"..factors.r.."x+"..factors.s..")")
-        -- Solve both quadratics, propagate _G.showComplex to allow/deny complex roots
-        local roots1 = matchQuadraticEq(
-            { type="equation", left={type="add", args={
+        table.insert(steps, { description = "Factored as: (" .. var .. "² + " .. factors.p .. var .. " + " .. factors.q .. ")(" .. var .. "² + " .. factors.r .. var .. " + " .. factors.s .. ") = 0" })
+        table.insert(steps, { description = "Solving each quadratic factor separately:" })
+        
+        -- Create quadratic equations and solve them
+        local quad1 = { 
+            type="equation", 
+            left={type="add", args={
                 {type="pow", base={type="variable", name=var}, exp={type="number", value=2}},
                 {type="mul", args={{type="number", value=factors.p}, {type="variable", name=var}}},
                 {type="number", value=factors.q}
-            }}, right={type="number", value=0}}, var)
-        local roots2 = matchQuadraticEq(
-            { type="equation", left={type="add", args={
+            }}, 
+            right={type="number", value=0}
+        }
+        
+        local quad2 = { 
+            type="equation", 
+            left={type="add", args={
                 {type="pow", base={type="variable", name=var}, exp={type="number", value=2}},
                 {type="mul", args={{type="number", value=factors.r}, {type="variable", name=var}}},
                 {type="number", value=factors.s}
-            }}, right={type="number", value=0}}, var)
+            }}, 
+            right={type="number", value=0}
+        }
+        
+        local roots1 = matchQuadraticEq(quad1, var, steps)
+        local roots2 = matchQuadraticEq(quad2, var, steps)
+        
         local all_roots = {}
         if roots1 then for _, rt in ipairs(roots1) do table.insert(all_roots, rt) end end
         if roots2 then for _, rt in ipairs(roots2) do table.insert(all_roots, rt) end end
         return all_roots
     end
 
+    -- Ferrari's method
+    table.insert(steps, { description = "Using Ferrari's method for quartic solution" })
+    
     -- Normalize coefficients
     b = b / a
     c = c / a
     d = d / a
     e = e / a
+    
+    table.insert(steps, { description = "Dividing by leading coefficient: " .. var .. "⁴ + " .. b .. var .. "³ + " .. c .. var .. "² + " .. d .. var .. " + " .. e .. " = 0" })
 
-    -- Ferrari's method (numeric version)
+    -- Depressed quartic
     local p = c - 3 * b^2 / 8
     local q = b^3 / 8 - b * c / 2 + d
     local r = e - 3 * b^4 / 256 + b^2 * c / 16 - b * d / 4
-    print(string.format("[matchQuarticEq] Depressed quartic: y^4 + %.6f*y^2 + %.6f*y + %.6f = 0", p, q, r))
+    
+    table.insert(steps, { description = "Converting to depressed quartic using substitution " .. var .. " = y - b/4" })
+    table.insert(steps, { description = "Depressed quartic: y⁴ + py² + qy + r = 0" })
+    table.insert(steps, { description = "Where p = " .. string.format("%.6f", p) .. ", q = " .. string.format("%.6f", q) .. ", r = " .. string.format("%.6f", r) })
 
     -- Solve resolvent cubic
+    table.insert(steps, { description = "Solving resolvent cubic: z³ + 2pz² + (p² - 4r)z - q² = 0" })
+    
     local cubicA = 1
     local cubicB = 2 * p
     local cubicC = p^2 - 4 * r
     local cubicD = -q^2
+    
     local cubicRoots = solveCubicReal(cubicA, cubicB, cubicC, cubicD)
-    local z = cubicRoots[1]  -- Use first real root
-    print("[matchQuarticEq] Chose resolvent root z =", z)
+    local z = cubicRoots[1]
+    
+    table.insert(steps, { description = "Using resolvent root z = " .. string.format("%.6f", z) })
 
-    -- Helper for complex division
+    -- Ferrari's completion
+    local sqrt1 = safe_sqrt(2 * z - p)
+    local S1 = sqrt1
+    
     local function div_complex(a, b)
-        -- Divides a by b, where either may be real or complex tables
         local a_re = type(a) == "table" and a.re or a
         local a_im = type(a) == "table" and (a.im or 0) or 0
         local b_re = type(b) == "table" and b.re or b
         local b_im = type(b) == "table" and (b.im or 0) or 0
         if b_im == 0 then
-            -- b is real
             if type(a) == "table" then
                 return { re = a_re / b_re, im = a_im / b_re }
             else
                 return a_re / b_re
             end
         end
-        -- Complex division
         local denom = b_re^2 + b_im^2
         return {
             re = (a_re * b_re + a_im * b_im) / denom,
             im = (a_im * b_re - a_re * b_im) / denom
         }
     end
-
-    -- Helper for complex multiplication
-    local function mul_complex(a, b)
-        local a_re = type(a) == "table" and a.re or a
-        local a_im = type(a) == "table" and (a.im or 0) or 0
-        local b_re = type(b) == "table" and b.re or b
-        local b_im = type(b) == "table" and (b.im or 0) or 0
-        return {
-            re = a_re * b_re - a_im * b_im,
-            im = a_re * b_im + a_im * b_re
-        }
-    end
-
-    local sqrt1 = safe_sqrt(2 * z - p)
-    local sqrt1v = type(sqrt1) == "table" and sqrt1.re or sqrt1
-    --local sqrt2 = (type(sqrt1) == "table") and 0 or (q / (2 * sqrt1))
-    --local S1 = sqrt1
-    --local S2 = sqrt2
-    local S1 = sqrt1
+    
     local S2 = div_complex(q, type(sqrt1) == "table" and { re = 2 * (sqrt1.re or 0), im = 2 * (sqrt1.im or 0) } or (2 * sqrt1))
 
-    local roots = {}
+    table.insert(steps, { description = "Computing auxiliary values for Ferrari's method..." })
+
+    -- The rest follows the complex arithmetic for quartic roots
     local precision = _G.precision or _G.precision_digits or 4
     local function roundnum(x)
         if not x then return 0 end
         local mult = 10 ^ precision
         return math.floor(x * mult + 0.5) / mult
     end
+    
     local function format_root(val)
         if type(val) == "table" and val.im and val.im ~= 0 then
             return {
@@ -1203,6 +1181,7 @@ local function matchQuarticEq(eq, var)
         end
     end
 
+    -- Complex arithmetic helpers (abbreviated for space)
     local function add_complex(a, b)
         if type(a) == "table" and type(b) == "table" then
             return { re = a.re + b.re, im = (a.im or 0) + (b.im or 0) }
@@ -1235,6 +1214,17 @@ local function matchQuarticEq(eq, var)
         end
     end
 
+    local function mul_complex(a, b)
+        local a_re = type(a) == "table" and a.re or a
+        local a_im = type(a) == "table" and (a.im or 0) or 0
+        local b_re = type(b) == "table" and b.re or b
+        local b_im = type(b) == "table" and (b.im or 0) or 0
+        return {
+            re = a_re * b_re - a_im * b_im,
+            im = a_re * b_im + a_im * b_re
+        }
+    end
+
     local function div2(val)
         if type(val) == "table" then
             return { re = val.re / 2, im = (val.im or 0) / 2 }
@@ -1254,31 +1244,34 @@ local function matchQuarticEq(eq, var)
     local y3 = add_complex(base, div2(t3))
     local y4 = add_complex(base, div2(t4))
 
-    print(string.format("[matchQuarticEq] Numeric roots: %s, %s, %s, %s",
-        type(y1)=="table" and (y1.re or "")..(y1.im and ("+"..y1.im.."i") or "") or tostring(y1),
-        type(y2)=="table" and (y2.re or "")..(y2.im and ("+"..y2.im.."i") or "") or tostring(y2),
-        type(y3)=="table" and (y3.re or "")..(y3.im and ("+"..y3.im.."i") or "") or tostring(y3),
-        type(y4)=="table" and (y4.re or "")..(y4.im and ("+"..y4.im.."i") or "") or tostring(y4)
-    ))
+    table.insert(steps, { description = "Four quartic roots computed using Ferrari's method" })
 
-    -- Before constructing roots, if _G.showComplex is not set and any root is complex, skip or return only real roots
     if not _G.showComplex then
         local real_roots = {}
-        for _, y in ipairs({y1, y2, y3, y4}) do
+        for i, y in ipairs({y1, y2, y3, y4}) do
             if type(y) == "table" and (y.im and math.abs(y.im) > 1e-10) then
                 -- skip complex root
             else
-                -- real root
                 local val = y
                 if type(y) == "table" then val = y.re end
                 table.insert(real_roots, format_root(val))
+                table.insert(steps, { description = var .. " = " .. string.format("%.6f", val) })
             end
         end
         if #real_roots == 0 then
-            print("[matchQuarticEq] No real roots found")
+            table.insert(steps, { description = "All roots are complex (not displayed in real mode)" })
             return {"No real roots"}
+        end
+        return real_roots
+    end
+
+    table.insert(steps, { description = "Quartic solutions:" })
+    for i, y in ipairs({y1, y2, y3, y4}) do
+        if type(y) == "table" and y.im and y.im ~= 0 then
+            table.insert(steps, { description = var .. "₊" .. i .. " = " .. string.format("%.6f", y.re) .. " + " .. string.format("%.6f", y.im) .. "i" })
         else
-            return real_roots
+            local val = type(y) == "table" and y.re or y
+            table.insert(steps, { description = var .. "₊" .. i .. " = " .. string.format("%.6f", val) })
         end
     end
 
@@ -1311,11 +1304,184 @@ function solveCubicReal(a, b, c, d)
     return roots
 end
 
--- Export functions
+-- Main solve function with intelligent step filtering
+function solve(input_expr, var)
+    local steps = {}
+    
+    table.insert(steps, { description = "Solving equation: " .. tostring(input_expr) })
+
+    local parser = rawget(_G, "parser") or require("parser")
+    local ast_mod = rawget(_G, "ast") or require("ast")
+    local simplify = rawget(_G, "simplify") or require("simplify")
+
+    local expr = input_expr
+    if type(expr) == "string" then
+        local s = expr
+        s = s:gsub("(%d)(%a)", "%1*%2")
+        s = s:gsub("(%d)(%()", "%1*%2")
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "Parsing: " .. s })
+        end
+        expr = parser.parse(s)
+    end
+    if not expr then
+        error(errors.invalid("solve", "parse failed, got nil AST"))
+    end
+
+    var = var or (function()
+        local function findVar(node)
+            if not node or type(node) ~= "table" then return nil end
+            if node.type == "variable" then return node.name end
+            for _, k in ipairs { "left", "right", "value", "args" } do
+                local child = node[k]
+                if child then
+                    if type(child) == "table" and not child[1] then
+                        local res = findVar(child)
+                        if res then return res end
+                    elseif type(child) == "table" then
+                        for _, v in ipairs(child) do
+                            local res = findVar(v)
+                            if res then return res end
+                        end
+                    end
+                end
+            end
+            return nil
+        end
+        return findVar(expr.left) or findVar(expr.right) or "x"
+    end)()
+
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Variable to solve for: " .. var })
+    end
+
+    if expr.type == "equation" then
+        expr = ast_mod.eq(expr.left, expr.right)
+    elseif expr.type ~= "equation" then
+        expr = ast_mod.eq(expr, ast_mod.number(0))
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "Converting to equation form: " .. format_expr(expr) })
+        end
+    end
+
+    expr = simplify.simplify(expr)
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "After simplification: " .. format_expr(expr) })
+    end
+
+    local diff = simplify.simplify(ast_mod.sub(expr.left, expr.right))
+    local fallback_eq = ast_mod.eq(diff, ast_mod.number(0))
+
+    -- Find polynomial degree and analyze complexity
+    local coeffs = polyCoeffs(fallback_eq.left, var, nil, steps)
+    local maxdeg = 0
+    for d, _ in pairs(coeffs) do
+        if d > maxdeg then maxdeg = d end
+    end
+
+    -- Analyze complexity before proceeding
+    local complexity = analyzeComplexity(format_expr(expr), coeffs, maxdeg)
+    
+    -- Set suppression flag for basic steps based on complexity
+    if complexity.is_trivial then
+        _G.suppress_basic_steps = true
+    end
+
+    if not _G.suppress_basic_steps then
+        table.insert(steps, { description = "Polynomial degree: " .. maxdeg })
+    end
+
+    local result, raw_steps
+    
+    if maxdeg == 1 then
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "This is a linear equation" })
+        end
+        local ans_lin = matchLinearEq(fallback_eq, var, steps)
+        if ans_lin then
+            local rhs
+            if type(ans_lin) ~= "table" then
+                rhs = ast_mod.number(ans_lin)
+            else
+                rhs = ans_lin
+            end
+            local eq_ast = ast_mod.eq(ast_mod.symbol(var), rhs)
+            local simplified_eq = simplify.simplify(eq_ast)
+            result = format_expr(simplified_eq)
+            if simplified_eq and simplified_eq.type == "sub"
+                and simplified_eq.left and simplified_eq.right
+                and simplified_eq.left.type == "variable"
+                and simplified_eq.right.type == "number" then
+                result = simplified_eq.left.name .. " = " .. tostring(simplified_eq.right.value)
+            end
+            raw_steps = steps
+        end
+    elseif maxdeg == 2 then
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "This is a quadratic equation" })
+        end
+        local ans_quad = matchQuadraticEq(fallback_eq, var, steps)
+        if ans_quad then
+            local pieces = {}
+            for i, root in ipairs(ans_quad) do
+                table.insert(pieces, var .. " = " .. format_expr(root))
+            end
+            result = table.concat(pieces, ", ")
+            raw_steps = steps
+        end
+    elseif maxdeg == 3 then
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "This is a cubic equation" })
+        end
+        local ans_cubic = matchCubicEq(fallback_eq, var, steps)
+        if ans_cubic then
+            local pieces = {}
+            for i, root in ipairs(ans_cubic) do
+                table.insert(pieces, var .. " = " .. format_expr(root))
+            end
+            result = table.concat(pieces, ", ")
+            raw_steps = steps
+        end
+    elseif maxdeg == 4 then
+        if not _G.suppress_basic_steps then
+            table.insert(steps, { description = "This is a quartic equation" })
+        end
+        local ans_quartic = matchQuarticEq(fallback_eq, var, steps)
+        if ans_quartic then
+            local pieces = {}
+            for i, root in ipairs(ans_quartic) do
+                table.insert(pieces, var .. " = " .. format_expr(root))
+            end
+            result = table.concat(pieces, ", ")
+            raw_steps = steps
+        end
+    end
+
+    if not result then
+        table.insert(steps, { description = "No analytical solution method available for this equation" })
+        if _G.errors then
+            error(_G.errors.get("solve(not_today_satan)") or "No analytical solution found")
+        else
+            return "No analytical solution found", steps
+        end
+    end
+
+    -- Apply intelligent filtering
+    local filtered_steps = filterSteps(raw_steps, complexity)
+    
+    -- Clean up global state
+    _G.suppress_basic_steps = nil
+    
+    return result, filtered_steps
+end
+
+-- Export functions with steps support
 _G.solve = solve
 _G.polyCoeffs = polyCoeffs
 _G.matchLinearEq = matchLinearEq
 _G.matchQuadraticEq = matchQuadraticEq
-_G.astToString = astToString
 _G.matchCubicEq = matchCubicEq
 _G.matchQuarticEq = matchQuarticEq
+_G.format_expr = format_expr
+_G.analyzeComplexity = analyzeComplexity
+_G.filterSteps = filterSteps

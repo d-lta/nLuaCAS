@@ -1,279 +1,522 @@
--- Derivative Engine (WIP)
--- Tries to symbolically differentiate expressions.
--- Some parts work. Some parts pretend to work.
--- Expect broken edge cases, unimplemented branches, and fallback logic.
+-- Derivative Engine with Mathematical Solution Steps
+-- Now shows actual mathematical work instead of rule explanations
 
 local ast = rawget(_G, "ast") or require("ast")
 local trig = rawget(_G, "trig")
+local simplify = rawget(_G, "simplify")
 
--- Utility: shallow copy of a table
-local function copy(tbl)
-  if type(tbl) ~= "table" then return tbl end
-  local t = {}
-  for k,v in pairs(tbl) do t[k]=v end
-  return t
-end
--- Utility: check if AST is a constant (number)
-local function is_const(ast)
-  return ast.type == "number"
+-- Utility: DEEP copy of a table
+local function deep_copy(obj)
+  if type(obj) ~= "table" then return obj end
+  
+  if obj.__copy_visited then return obj end 
+  obj.__copy_visited = true
+
+  local new_table = {}
+  for key, value in pairs(obj) do
+      new_table[key] = deep_copy(value)
+  end
+  
+  obj.__copy_visited = nil
+
+  local mt = getmetatable(obj)
+  if mt then
+      setmetatable(new_table, mt)
+  end
+  return new_table
 end
 
--- Utility: check if AST is a variable (symbol)
-local function is_var(ast)
-  return ast.type == "variable"
+-- Utility functions
+local function is_const(ast_node)
+  return ast_node and ast_node.type == "number"
 end
 
--- Utility: check if AST is a specific symbol
-local function is_symbol(ast, name)
-  return ast.type == "variable" and ast.name == name
+local function is_var(ast_node)
+  return ast_node and ast_node.type == "variable"
 end
 
--- Utility: limit AST node
+local function is_symbol(ast_node, name)
+  return ast_node and ast_node.type == "variable" and ast_node.name == name
+end
+
 local function lim(expr, var, to)
   return { type = 'lim', expr = expr, var = var, to = to }
 end
 
--- Symbolic differentiation core. Tries to pretend it understands your math.
--- Falls back to limit definitions when it gives up.
+-- Helper to format expressions nicely for steps
+local function format_expr(ast_node)
+  return (simplify and simplify.pretty_print(ast_node)) or ast.tostring(ast_node)
+end
+
+-- Symbolic differentiation core with mathematical solution steps
 local function diffAST(ast_node, var)
+  local steps = {}
+  local result = nil
+
+  -- Input validation
   if not ast_node then
-    error("diffAST: invalid AST node passed in")
+    error(_G.errors.get("diff(unimplemented_node)") or "Input AST node is nil.")
   end
   if type(ast_node) ~= "table" then
-    error("diffAST: encountered non-AST node of type " .. type(ast_node))
+    error(_G.errors.get("diff(just_no)") or "Input is not an AST table.")
   end
+  if not ast_node.type then
+    error(_G.errors.get("diff(no_type)") or "Input AST table missing 'type' field.")
+  end
+
   var = var or "x"
-  -- Numbers don't change. That's kind of the point.
+  
+  -- Helper to add a mathematical step
+  local function add_step(description)
+      table.insert(steps, { description = description })
+  end
+
+  -- Check if this is a trivial derivative that doesn't need showing steps
+  local function is_trivial(node)
+    return (node.type == "number") or 
+           (node.type == "variable" and node.name == var) or
+           (node.type == "variable" and node.name ~= var)
+  end
+
+  -- Numbers: derivative is 0 (only show step if it's the main expression)
   if ast_node.type == "number" then
-    -- x → 1, everything else → 0. Classic.
-    return ast.number(0)
-  end
-  -- x → 1, everything else → 0. Classic.
-  if ast_node.type == "variable" then
-    if ast_node.name == var then
-      return ast.number(1)
-    else
-      return ast.number(0)
+    result = ast.number(0)
+    assert(result and result.type == "number", "Constant Rule failed.")
+    -- Only add step if this is likely the main expression being differentiated
+    if format_expr(ast_node) ~= "1" and format_expr(ast_node) ~= "0" then
+      add_step("d/d" .. var .. "(" .. format_expr(ast_node) .. ") = 0")
     end
-  end
-  -- Negation: signs flip, but rules stay the same.
-  if ast_node.type == "neg" then
-    return ast.neg(diffAST(ast_node.value, var))
-  end
-  -- Addition: term-wise differentiation. Nothing surprising.
-  if ast_node.type == "add" then
+  
+  -- Variables (only show step for non-trivial cases)
+  elseif ast_node.type == "variable" then
+    if ast_node.name == var then
+      result = ast.number(1)
+      assert(result and result.type == "number", "Variable Rule (self) failed.")
+      -- Don't show d/dx(x) = 1 unless it's the main expression
+    else
+      result = ast.number(0)
+      assert(result and result.type == "number", "Variable Rule (other) failed.")
+      -- Don't show d/dx(constant) = 0 unless it's the main expression
+    end
+  
+  -- Negation: -f(x) → -f'(x)
+  elseif ast_node.type == "neg" then
+    local inner_arg = ast_node.arg or ast_node.value
+    assert(inner_arg, "Negation node has no valid argument.")
+    
+    add_step("d/d" .. var .. "(-" .. format_expr(inner_arg) .. ") = -d/d" .. var .. "(" .. format_expr(inner_arg) .. ")")
+    
+    local inner_deriv, inner_steps = diffAST(inner_arg, var)
+    assert(inner_deriv and inner_deriv.type, "diffAST failed for negation argument.")
+    for _, s in ipairs(inner_steps) do table.insert(steps, s) end
+
+    result = ast.neg(inner_deriv)
+    assert(result and result.type == "neg", "Negation Rule failed.")
+    add_step("= -(" .. format_expr(inner_deriv) .. ")")
+  
+  -- Addition: sum rule
+  elseif ast_node.type == "add" then
+    local expr_str = format_expr(ast_node)
+    add_step("d/d" .. var .. "(" .. expr_str .. ") = " .. 
+             table.concat(
+               (function()
+                 local parts = {}
+                 for i, term in ipairs(ast_node.args) do
+                   table.insert(parts, "d/d" .. var .. "(" .. format_expr(term) .. ")")
+                 end
+                 return parts
+               end)(), " + "))
+    
     local deriv_args = {}
     for i, term in ipairs(ast_node.args) do
-      deriv_args[i] = diffAST(term, var)
+      local d_term, d_term_steps = diffAST(term, var)
+      assert(d_term and d_term.type, "diffAST failed for addition term.")
+      for _, s in ipairs(d_term_steps) do table.insert(steps, s) end
+      table.insert(deriv_args, d_term)
     end
-    return ast.add(table.unpack(deriv_args))
-  end
-  -- Subtraction: just addition's grumpy cousin.
-  if ast_node.type == "sub" then
-    return ast.sub(diffAST(ast_node.left, var), diffAST(ast_node.right, var))
-  end
-  -- Multiplication: full product rule. Brace yourself.
-  if ast_node.type == "mul" then
-    local n = #ast_node.args
-    local terms = {}
-    for k = 1, n do
-      local prod_args = {}
-      for i = 1, n do
-        if i == k then
-          prod_args[i] = diffAST(ast_node.args[i], var)
-        else
-          prod_args[i] = copy(ast_node.args[i])
+    assert(#deriv_args > 0, "Sum rule resulted in no terms.")
+    result = ast.add(table.unpack(deriv_args))
+    assert(result and result.type == "add", "Sum Rule failed.")
+    
+    add_step("= " .. format_expr(result))
+  
+  -- Subtraction
+  elseif ast_node.type == "sub" then
+    add_step("d/d" .. var .. "(" .. format_expr(ast_node) .. ") = d/d" .. var .. "(" .. 
+             format_expr(ast_node.left) .. ") - d/d" .. var .. "(" .. format_expr(ast_node.right) .. ")")
+    
+    local left_deriv, left_steps = diffAST(ast_node.left, var)
+    assert(left_deriv and left_deriv.type, "diffAST failed for subtraction left.")
+    for _, s in ipairs(left_steps) do table.insert(steps, s) end
+
+    local right_deriv, right_steps = diffAST(ast_node.right, var)
+    assert(right_deriv and right_deriv.type, "diffAST failed for subtraction right.")
+    for _, s in ipairs(right_steps) do table.insert(steps, s) end
+
+    result = ast.sub(left_deriv, right_deriv)
+    assert(result and result.type == "sub", "Difference Rule failed.")
+    add_step("= " .. format_expr(left_deriv) .. " - " .. format_expr(right_deriv))
+    add_step("= " .. format_expr(result))
+  
+  -- Multiplication: product rule
+  elseif ast_node.type == "mul" then
+    local n_factors = #ast_node.args
+    
+    if n_factors == 2 then
+        local u, v = ast_node.args[1], ast_node.args[2]
+        add_step("d/d" .. var .. "(" .. format_expr(u) .. " · " .. format_expr(v) .. 
+                ") = d/d" .. var .. "(" .. format_expr(u) .. ") · " .. format_expr(v) .. 
+                " + " .. format_expr(u) .. " · d/d" .. var .. "(" .. format_expr(v) .. ")")
+        
+        local du, du_steps = diffAST(u, var)
+        assert(du and du.type, "diffAST failed for product u.")
+        for _, s in ipairs(du_steps) do table.insert(steps, s) end
+
+        local dv, dv_steps = diffAST(v, var)
+        assert(dv and dv.type, "diffAST failed for product v.")
+        for _, s in ipairs(dv_steps) do table.insert(steps, s) end
+        
+        local term1 = ast.mul(du, deep_copy(v))
+        assert(term1 and term1.type == "mul", "Product Rule term1 failed.")
+        local term2 = ast.mul(deep_copy(u), dv)
+        assert(term2 and term2.type == "mul", "Product Rule term2 failed.")
+        
+        add_step("= " .. format_expr(du) .. " · " .. format_expr(v) .. 
+                " + " .. format_expr(u) .. " · " .. format_expr(dv))
+        
+        result = ast.add(term1, term2)
+        assert(result and result.type == "add", "Product Rule failed.")
+        add_step("= " .. format_expr(result))
+    else
+        -- General product rule
+        add_step("Using product rule for " .. n_factors .. " factors:")
+        local terms = {}
+        for k = 1, n_factors do
+            local prod_args = {}
+            local d_arg_k, d_arg_k_steps = diffAST(ast_node.args[k], var)
+            assert(d_arg_k and d_arg_k.type, "diffAST failed for general product factor.")
+            for _, s in ipairs(d_arg_k_steps) do table.insert(steps, s) end
+
+            for i = 1, n_factors do
+                if i == k then
+                    prod_args[i] = d_arg_k
+                else
+                    prod_args[i] = deep_copy(ast_node.args[i])
+                end
+            end
+            local term_k = ast.mul(table.unpack(prod_args))
+            assert(term_k and term_k.type == "mul", "General Product Rule term failed.")
+            table.insert(terms, term_k)
         end
-      end
-      terms[k] = ast.mul(table.unpack(prod_args))
+        assert(#terms > 0, "General Product Rule resulted in no terms.")
+        result = ast.add(table.unpack(terms))
+        assert(result and result.type == "add", "General Product Rule failed.")
+        add_step("= " .. format_expr(result))
     end
-    return ast.add(table.unpack(terms))
-  end
-  -- Quotient rule. Surprisingly tidy, even here.
-  if ast_node.type == "div" then
+  
+  -- Division: quotient rule
+  elseif ast_node.type == "div" then
     local u = ast_node.left
     local v = ast_node.right
-    local du = diffAST(u, var)
-    local dv = diffAST(v, var)
+    
+    add_step("d/d" .. var .. "(" .. format_expr(u) .. "/" .. format_expr(v) .. 
+            ") = [" .. format_expr(v) .. " · d/d" .. var .. "(" .. format_expr(u) .. 
+            ") - " .. format_expr(u) .. " · d/d" .. var .. "(" .. format_expr(v) .. 
+            ")] / (" .. format_expr(v) .. ")²")
+    
+    local du, du_steps = diffAST(u, var)
+    assert(du and du.type, "diffAST failed for quotient numerator.")
+    for _, s in ipairs(du_steps) do table.insert(steps, s) end
+
+    local dv, dv_steps = diffAST(v, var)
+    assert(dv and dv.type, "diffAST failed for quotient denominator.")
+    for _, s in ipairs(dv_steps) do table.insert(steps, s) end
+
+    add_step("= [" .. format_expr(v) .. " · " .. format_expr(du) .. 
+            " - " .. format_expr(u) .. " · " .. format_expr(dv) .. 
+            "] / (" .. format_expr(v) .. ")²")
 
     local numerator = ast.sub(
-      ast.mul(du, copy(v)),
-      ast.mul(copy(u), dv)
+      ast.mul(du, deep_copy(v)),
+      ast.mul(deep_copy(u), dv)
     )
+    assert(numerator and numerator.type == "sub", "Quotient Rule numerator failed.")
 
-    local denominator = ast.pow(copy(v), ast.number(2))
+    local denominator = ast.pow(deep_copy(v), ast.number(2))
+    assert(denominator and denominator.type == "pow", "Quotient Rule denominator failed.")
 
-    return ast.div(numerator, denominator)
-  end
-  -- Powers: handles constants, variables, and full u^v chains.
-  -- Tries to be clever with logs if needed.
-  if ast_node.type == "pow" then
+    result = ast.div(numerator, denominator)
+    assert(result and result.type == "div", "Quotient Rule failed.")
+    add_step("= " .. format_expr(result))
+  
+  -- Powers
+  elseif ast_node.type == "pow" then
     local u, n = ast_node.base, ast_node.exp
-    -- Case: u^c, c constant
+    
     if is_const(n) then
-      -- d/dx(u^c) = c*u^(c-1) * du/dx
-      return ast.mul(
-        ast.mul(copy(n), ast.pow(copy(u), ast.number(n.value - 1))),
-        diffAST(u, var)
-      )
-    -- Case: c^v, c constant
-    elseif is_const(u) then
-      -- d/dx(c^v) = ln(c) * c^v * dv/dx
-      return ast.mul(
-        ast.mul(ast.func("ln", { copy(u) }), ast.pow(copy(u), copy(n))),
-        diffAST(n, var)
-      )
-    else
-      -- General case: d/dx(u^v) = u^v * (v' * ln(u) + v * u'/u)
-      -- (by logarithmic differentiation)
-      return ast.mul(
-        ast.pow(copy(u), copy(n)),
-        ast.add(
-          ast.mul(diffAST(n, var), ast.func("ln", { copy(u) })),
-          ast.mul(copy(n), ast.div(diffAST(u, var), copy(u)))
-        )
-      )
-    end
-  end
-  -- Function differentiation: sin, exp, ln, etc.
-  -- Tries trig.lua first. Falls back to hardcoded rules.
-  -- Anything unknown? It gets the limit treatment.
-  if ast_node.type == "func" then
-    local fname = ast_node.name
-    -- Support both .arg (single) and .args (list) notation
-    local u = ast_node.arg or (ast_node.args and ast_node.args[1])
-    local du = diffAST(u, var)
-    -- Handle standard trig derivatives directly
-    if fname == "sin" then
-        return ast.mul(ast.func("cos", { copy(u) }), du)
-    elseif fname == "cos" then
-        return ast.neg(ast.mul(ast.func("sin", { copy(u) }), du))
-    elseif fname == "tan" then
-        return ast.mul(ast.pow(ast.func("sec", { copy(u) }), ast.number(2)), du)
-    elseif fname == "sec" then
-        return ast.mul(ast.mul(ast.func("sec", { copy(u) }), ast.func("tan", { copy(u) })), du)
-    elseif fname == "csc" then
-        return ast.neg(ast.mul(ast.func("csc", { copy(u) }), ast.func("cot", { copy(u) }), du))
-    elseif fname == "cot" then
-        return ast.neg(ast.mul(ast.pow(ast.func("csc", { copy(u) }), ast.number(2)), du))
-    elseif fname == "arcsin" then
-        return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du)
-    elseif fname == "arccos" then
-        return ast.neg(ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du))
-    elseif fname == "arctan" then
-        return ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
-    elseif fname == "arccsc" then
-        return ast.neg(ast.mul(ast.div(ast.number(1), ast.mul(ast.func("abs", { copy(u) }), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) }))), du))
-    elseif fname == "arcsec" then
-        return ast.mul(ast.div(ast.number(1), ast.mul(ast.func("abs", { copy(u) }), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) }))), du)
-    elseif fname == "arccot" then
-        return ast.neg(ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du))
-    end
-    -- Use trig.lua for trigonometric differentiation if available
-    if trig and trig.diff_trig_func then
-      local trig_result = trig.diff_trig_func(fname, copy(u), du)
-      if trig_result then return trig_result end
-    end
-    if fname == "exp" then
-      return ast.mul(ast.func("exp", { copy(u) }), du)
-    elseif fname == "ln" then
-      return ast.mul(ast.div(ast.number(1), copy(u)), du)
-    elseif fname == "log" then
-      -- log(x) = ln(x) / ln(10), so derivative is 1/(x ln(10))
-      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(10) }))), du)
-    elseif fname == "sqrt" then
-      -- d/dx sqrt(u) = 1/(2*sqrt(u)) * du/dx
-      return ast.mul(ast.div(ast.number(1), ast.mul(ast.number(2), ast.func("sqrt", { copy(u) }))), du)
-    elseif fname == "asin" then
-      -- d/dx asin(u) = 1/sqrt(1-u^2) * du/dx
-      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) })), du)
-    elseif fname == "acos" then
-      -- d/dx acos(u) = -1/sqrt(1-u^2) * du/dx
-      return ast.mul(ast.neg(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2))) }))), du)
-    elseif fname == "atan" then
-      -- d/dx atan(u) = 1/(1+u^2) * du/dx
-      return ast.mul(ast.div(ast.number(1), ast.add(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
-    elseif fname == "sinh" then
-      return ast.mul(ast.func("cosh", { copy(u) }), du)
-    elseif fname == "cosh" then
-      return ast.mul(ast.func("sinh", { copy(u) }), du)
-    elseif fname == "tanh" then
-      return ast.mul(ast.sub(ast.number(1), ast.pow(ast.func("tanh", { copy(u) }), ast.number(2))), du)
-    elseif fname == "asinh" then
-      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.add(ast.pow(copy(u), ast.number(2)), ast.number(1)) })), du)
-    elseif fname == "acosh" then
-      return ast.mul(ast.div(ast.number(1), ast.func("sqrt", { ast.sub(ast.pow(copy(u), ast.number(2)), ast.number(1)) })), du)
-    elseif fname == "atanh" then
-      return ast.mul(ast.div(ast.number(1), ast.sub(ast.number(1), ast.pow(copy(u), ast.number(2)))), du)
-    elseif fname == "log10" then
-      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(10) }))), du)
-    elseif fname == "log2" then
-      return ast.mul(ast.div(ast.number(1), ast.mul(copy(u), ast.func("ln", { ast.number(2) }))), du)
-    elseif fname == "abs" then
-      return ast.mul(ast.div(copy(u), ast.func("abs", { copy(u) })), du)
-    elseif fname == "sign" then
-      return ast.number(0)
-    elseif fname == "floor" or fname == "ceil" or fname == "round" then
-      -- Derivative is zero except at discontinuity
-      return ast.number(0)
-    elseif fname == "erf" then
-      -- d/dx erf(u) = 2/sqrt(pi) * exp(-u^2) * du/dx
-      return ast.mul(ast.mul(ast.div(ast.number(2), ast.func("sqrt", { ast.number(math.pi) })), ast.func("exp", { ast.neg(ast.pow(copy(u), ast.number(2))) })), du)
-    elseif fname == "gamma" then
-      -- d/dx gamma(u) = gamma(u) * digamma(u) * du/dx (digamma not implemented, fallback)
-      return { type = "unimplemented_derivative", func = fname, arg = copy(u) }
-    elseif fname == "digamma" then
-      -- d/dx digamma(u) = trigamma(u) * du/dx
-      return ast.mul(ast.func("trigamma", { copy(u) }), du)
-    elseif fname == "trigamma" then
-      -- d/dx trigamma(u) = polygamma(2, u) * du/dx
-      return ast.mul(ast.func("polygamma", { ast.number(2), copy(u) }), du)
-    else
-      -- Fallback: Use limit definition for unknown function
-      -- f'(x) = lim_{h->0} [f(x+h)-f(x)]/h
-      local h = ast.symbol("__h__")
-      local u_ph = ast.add(copy(u), h)
-      local fxh = ast.func(fname, { u_ph })
-      local fx = ast.func(fname, { copy(u) })
-      local nume = ast.sub(fxh, fx)
-      local denom = copy(h)
-      if not denom or denom.type ~= "variable" then
-          denom = ast.symbol("__h__")
+      -- Power rule: more concise for simple cases
+      local du, du_steps = diffAST(u, var)
+      assert(du and du.type, "diffAST failed for power base.")
+      
+      local n_val = n.value
+      local n_minus_1 = ast.number(n_val - 1)
+      assert(n_minus_1 and n_minus_1.type == "number", "Power Rule n-1 failed.")
+      
+      -- For simple x^n, just show: d/dx(x^n) = nx^(n-1)
+      if is_var(u) and u.name == var and is_trivial(du) then
+        add_step("d/d" .. var .. "(" .. format_expr(u) .. "^" .. format_expr(n) .. 
+                ") = " .. format_expr(n) .. format_expr(u) .. "^(" .. 
+                format_expr(n) .. "-1) = " .. format_expr(n) .. format_expr(u) .. "^" .. 
+                format_expr(n_minus_1))
+      else
+        -- For more complex cases, show chain rule
+        add_step("d/d" .. var .. "(" .. format_expr(u) .. "^" .. format_expr(n) .. 
+                ") = " .. format_expr(n) .. "(" .. format_expr(u) .. ")^(" .. 
+                format_expr(n) .. "-1) · d/d" .. var .. "(" .. format_expr(u) .. ")")
+        
+        -- Add inner derivative steps if non-trivial
+        if not is_trivial(u) then
+          for _, s in ipairs(du_steps) do table.insert(steps, s) end
+        end
+        
+        add_step("= " .. format_expr(n) .. "(" .. format_expr(u) .. ")^" .. 
+                format_expr(n_minus_1) .. " · " .. format_expr(du))
       end
-      local quot = ast.div(nume, denom)
-      return lim(quot, "__h__", ast.number(0))
+      
+      local term1 = ast.mul(deep_copy(n), ast.pow(deep_copy(u), n_minus_1))
+      assert(term1 and term1.type == "mul", "Power Rule term1 failed.")
+      result = ast.mul(term1, du)
+      assert(result and result.type == "mul", "Power Rule failed.")
+      
+      add_step("= " .. format_expr(result))
+      
+    elseif is_const(u) then
+      -- Exponential rule: d/dx(a^u) = ln(a)·a^u·u'
+      add_step("d/d" .. var .. "(" .. format_expr(u) .. "^" .. format_expr(n) .. 
+              ") = ln(" .. format_expr(u) .. ") · " .. format_expr(u) .. "^" .. 
+              format_expr(n) .. " · d/d" .. var .. "(" .. format_expr(n) .. ")")
+      
+      local dv, dv_steps = diffAST(n, var)
+      assert(dv and dv.type, "diffAST failed for exponential exponent.")
+      for _, s in ipairs(dv_steps) do table.insert(steps, s) end
+      
+      local ln_u = ast.func("ln", { deep_copy(u) })
+      assert(ln_u and ln_u.type == "func", "Exponential Rule ln(u) failed.")
+      local u_pow_n = ast.pow(deep_copy(u), deep_copy(n))
+      assert(u_pow_n and u_pow_n.type == "pow", "Exponential Rule a^u failed.")
+
+      local term1 = ast.mul(ln_u, u_pow_n)
+      assert(term1 and term1.type == "mul", "Exponential Rule term1 failed.")
+      result = ast.mul(term1, dv)
+      assert(result and result.type == "mul", "Exponential Rule failed.")
+      
+      add_step("= " .. format_expr(ln_u) .. " · " .. format_expr(u_pow_n) .. " · " .. format_expr(dv))
+      add_step("= " .. format_expr(result))
+    else
+      -- General case: u^v using logarithmic differentiation
+      add_step("d/d" .. var .. "(" .. format_expr(u) .. "^" .. format_expr(n) .. 
+              ") = " .. format_expr(u) .. "^" .. format_expr(n) .. 
+              " · [d/d" .. var .. "(" .. format_expr(n) .. ") · ln(" .. format_expr(u) .. 
+              ") + " .. format_expr(n) .. " · d/d" .. var .. "(" .. format_expr(u) .. 
+              ")/" .. format_expr(u) .. "]")
+      
+      local du, du_steps = diffAST(u, var)
+      assert(du and du.type, "diffAST failed for general power base.")
+      for _, s in ipairs(du_steps) do table.insert(steps, s) end
+      local dv, dv_steps = diffAST(n, var)
+      assert(dv and dv.type, "diffAST failed for general power exponent.")
+      for _, s in ipairs(dv_steps) do table.insert(steps, s) end
+      
+      local copied_u_pow_n = ast.pow(deep_copy(u), deep_copy(n))
+      assert(copied_u_pow_n and copied_u_pow_n.type == "pow", "General power u^v failed.")
+      
+      local ln_u = ast.func("ln", { deep_copy(u) })
+      assert(ln_u and ln_u.type == "func", "General power ln(u) failed.")
+      
+      local div_u_prime_u = ast.div(du, deep_copy(u))
+      assert(div_u_prime_u and div_u_prime_u.type == "div", "General power u'/u failed.")
+
+      local term1_add = ast.mul(dv, ln_u)
+      assert(term1_add and term1_add.type == "mul", "General power term1 failed.")
+      
+      local term2_add = ast.mul(deep_copy(n), div_u_prime_u)
+      assert(term2_add and term2_add.type == "mul", "General power term2 failed.")
+
+      local sum_terms = ast.add(term1_add, term2_add)
+      assert(sum_terms and sum_terms.type == "add", "General power sum failed.")
+
+      result = ast.mul(copied_u_pow_n, sum_terms)
+      assert(result and result.type == "mul", "General power final failed.")
+      
+      add_step("= " .. format_expr(copied_u_pow_n) .. " · [" .. format_expr(dv) .. 
+              " · " .. format_expr(ln_u) .. " + " .. format_expr(n) .. " · " .. 
+              format_expr(div_u_prime_u) .. "]")
+      add_step("= " .. format_expr(result))
     end
+  
+  -- Function differentiation with chain rule
+  elseif ast_node.type == "func" then
+    local fname = ast_node.name
+    local u = ast_node.arg or (ast_node.args and ast_node.args[1])
+    assert(u, "Function argument is nil for '" .. fname .. "'.")
+    
+    local du, du_steps = diffAST(u, var)
+    assert(du and du.type, "diffAST failed for function argument.")
+    
+    -- Handle specific functions
+    if fname == "sin" then
+        local cos_u = ast.func("cos", { deep_copy(u) })
+        result = ast.mul(cos_u, du)
+        
+        if is_var(u) and u.name == var then
+          -- Simple case: d/dx(sin(x)) = cos(x)
+          add_step("d/d" .. var .. "(sin(" .. format_expr(u) .. ")) = cos(" .. format_expr(u) .. ")")
+        else
+          -- Chain rule case
+          add_step("d/d" .. var .. "(sin(" .. format_expr(u) .. ")) = cos(" .. format_expr(u) .. ") · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= cos(" .. format_expr(u) .. ") · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    elseif fname == "cos" then
+        local sin_u = ast.func("sin", { deep_copy(u) })
+        local neg_sin_u = ast.neg(sin_u)
+        result = ast.mul(neg_sin_u, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(cos(" .. format_expr(u) .. ")) = -sin(" .. format_expr(u) .. ")")
+        else
+          add_step("d/d" .. var .. "(cos(" .. format_expr(u) .. ")) = -sin(" .. format_expr(u) .. ") · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= -sin(" .. format_expr(u) .. ") · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    elseif fname == "tan" then
+        local sec_u_sq = ast.pow(ast.func("sec", { deep_copy(u) }), ast.number(2))
+        result = ast.mul(sec_u_sq, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(tan(" .. format_expr(u) .. ")) = sec²(" .. format_expr(u) .. ")")
+        else
+          add_step("d/d" .. var .. "(tan(" .. format_expr(u) .. ")) = sec²(" .. format_expr(u) .. ") · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= sec²(" .. format_expr(u) .. ") · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    elseif fname == "exp" then
+        local exp_u = ast.func("exp", { deep_copy(u) })
+        result = ast.mul(exp_u, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(e^" .. format_expr(u) .. ") = e^" .. format_expr(u))
+        else
+          add_step("d/d" .. var .. "(e^" .. format_expr(u) .. ") = e^" .. format_expr(u) .. " · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= e^" .. format_expr(u) .. " · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    elseif fname == "ln" then
+        local one_div_u = ast.div(ast.number(1), deep_copy(u))
+        result = ast.mul(one_div_u, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(ln(" .. format_expr(u) .. ")) = 1/" .. format_expr(u))
+        else
+          add_step("d/d" .. var .. "(ln(" .. format_expr(u) .. ")) = (1/" .. format_expr(u) .. ") · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= (1/" .. format_expr(u) .. ") · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    elseif fname == "sqrt" then
+        local two_sqrt_u = ast.mul(ast.number(2), ast.func("sqrt", { deep_copy(u) }))
+        local one_div_two_sqrt_u = ast.div(ast.number(1), two_sqrt_u)
+        result = ast.mul(one_div_two_sqrt_u, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(√" .. format_expr(u) .. ") = 1/(2√" .. format_expr(u) .. ")")
+        else
+          add_step("d/d" .. var .. "(√" .. format_expr(u) .. ") = (1/(2√" .. format_expr(u) .. ")) · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= (1/(2√" .. format_expr(u) .. ")) · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+        
+    else
+        -- For other functions, show generic derivative notation
+        local generic_deriv = ast.func(fname .. "'", { deep_copy(u) })
+        result = ast.mul(generic_deriv, du)
+        
+        if is_var(u) and u.name == var then
+          add_step("d/d" .. var .. "(" .. fname .. "(" .. format_expr(u) .. ")) = " .. fname .. "'(" .. format_expr(u) .. ")")
+        else
+          add_step("d/d" .. var .. "(" .. fname .. "(" .. format_expr(u) .. ")) = " .. fname .. "'(" .. format_expr(u) .. ") · d/d" .. var .. "(" .. format_expr(u) .. ")")
+          if not is_trivial(u) then
+            for _, s in ipairs(du_steps) do table.insert(steps, s) end
+          end
+          add_step("= " .. fname .. "'(" .. format_expr(u) .. ") · " .. format_expr(du))
+          add_step("= " .. format_expr(result))
+        end
+    end
+    
+    assert(result and result.type, "Function differentiation failed.")
+  
+  else
+    error(_G.errors.get("diff(unimplemented_node)") or "Unhandled node type '" .. tostring(ast_node.type) .. "'.")
   end
-  -- No clue what this is. Marked for manual inspection later.
-  -- As a safety fallback, return an unknown node
-  local result = { type = "unhandled_node", original = ast_node }
-  if type(result) ~= "table" or not result.type then
-    error("diffAST: returned invalid AST node structure")
+  
+  -- Simplify final result
+  assert(result and result.type, "Differentiation produced invalid result.")
+  local simplified_result = (simplify and simplify.simplify(deep_copy(result))) or deep_copy(result)
+  
+  -- Show simplification step if it actually simplified
+  if simplify and not ast.equal(simplified_result, result) then
+      add_step("Simplified: " .. format_expr(simplified_result))
   end
-  return result
+  
+  return simplified_result, steps
 end
 
-
--- Public interface: takes string input, returns simplified derivative AST.
--- If it doesn't break, it probably worked.
+-- Public interface
 local function derivative(expr, var)
-  -- Load parser
   local parser = rawget(_G, "parser") or require("parser")
-  -- Input validation and debug print
+  
   if type(expr) ~= "string" then
-    error("Invalid input to derivative(): expected string, got " .. type(expr))
+    error(_G.errors.get("diff(where_is_the_var)") or "Input must be a string expression.")
   end
-  print("DEBUG: input to parser.parse =", expr)
-  -- Parse expr string to AST
+  
   local tree = parser.parse(expr)
   if not tree then
-    error("Parsing failed: input = " .. expr)
+    error(_G.errors.get("parse(syntax)") or "Failed to parse expression.")
   end
-  local result = diffAST(tree, var)
-  if type(result) ~= "table" or not result.type then
-    error("Invalid derivative AST structure")
+  if type(tree) ~= "table" or not tree.type then
+    error(_G.errors.get("parse(invalid_ast)") or "Invalid AST from parser.")
   end
-  return (rawget(_G, "simplify") or require("simplify")).simplify(result)
+  
+  local result_ast, steps_list = diffAST(tree, var)
+  
+  if not result_ast or type(result_ast) ~= "table" or not result_ast.type then
+    error(_G.errors.get("internal(my_brain_hurts)") or "Differentiation failed.")
+  end
+  
+  return (simplify and simplify.simplify(deep_copy(result_ast))) or deep_copy(result_ast), steps_list
 end
+
 _G.derivative = derivative
 _G.diffAST = diffAST

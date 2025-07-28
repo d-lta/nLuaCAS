@@ -6,6 +6,7 @@
 --   parseExpr(tokens, idx) => ast, nextIdx -- because recursion is fun until it isn't.
 --
 -- Now with more "features" you didn't ask for: error nagging, big numbers, functions, brackets, sneaky multiplication, negative numbers, and, because why not, matrix parsing.
+-- Plus: properly weaponized error messages that will make you question your life choices.
 
 local parser = {}
 local init = rawget(_G, "init")
@@ -47,6 +48,18 @@ local function print_ast(ast, indent)
       print(indent .. "  base:")
       print_ast(ast.base, indent .. "    ")
     end
+    if ast.type == "lim" then
+  print(indent .. "limit:")
+  print(indent .. "  expr:")
+  print_ast(ast.expr, indent .. "    ")
+  print(indent .. "  var: " .. ast.var)
+  print(indent .. "  to:")
+  print_ast(ast.to, indent .. "    ")
+  if ast.direction then
+    print(indent .. "  direction: " .. ast.direction)
+  end
+  return
+end
     if ast.exp then
       print(indent .. "  exp:")
       print_ast(ast.exp, indent .. "    ")
@@ -59,6 +72,24 @@ local function print_ast(ast, indent)
       print(indent .. "  right:")
       print_ast(ast.right, indent .. "    ")
     end
+    -- NEW: Add print for integral-specific fields
+    if ast.integrand then
+        print(indent .. "  integrand:")
+        print_ast(ast.integrand, indent .. "    ")
+    end
+    if ast.respect_to then
+        print(indent .. "  respect_to:")
+        print_ast(ast.respect_to, indent .. "    ")
+    end
+    if ast.lower_bound then
+        print(indent .. "  lower_bound:")
+        print_ast(ast.lower_bound, indent .. "    ")
+    end
+    if ast.upper_bound then
+        print(indent .. "  upper_bound:")
+        print_ast(ast.upper_bound, indent .. "    ")
+    end
+    -- END NEW
   else
     for k, v in pairs(ast) do
       print(indent .. tostring(k) .. ":")
@@ -126,8 +157,8 @@ function parser.tokenize(expr)
       table.insert(tokens, {type="number", value=tonumber(num)})
       print(string.format("Token: [number] %s", num))
     elseif c == '∫' then
-      table.insert(tokens, {type="integral", value=c})
-      print(string.format("Token: [integral] %s", c))
+      table.insert(tokens, {type="integral_symbol", value=c}) -- Changed type name to avoid conflict
+      print(string.format("Token: [integral_symbol] %s", c))
       i = i + clen
     elseif is_alpha(c) then
       -- identifier/function
@@ -158,7 +189,7 @@ function parser.tokenize(expr)
         j = j + cclen
       end
       if j > len then
-        error(errors.invalid('tokenize', 'unterminated string literal'))
+        error(_G.errors.get("parse(unmatched_paren)") or errors.invalid('tokenize', 'unterminated string literal'))
       end
       table.insert(tokens, {type='string', value=str})
       print(string.format("Token: [string] %s", str))
@@ -179,14 +210,14 @@ function parser.tokenize(expr)
       elseif c == '(' then ttype = c
       elseif c == '[' or c == ']' then ttype = c
       elseif c == '=' then ttype = "equals"
-      elseif c == '∫' then ttype = "integral"
+      elseif c == '∫' then ttype = "integral_symbol" -- Consistent type name
       elseif c == '+' or c == '-' or c == '*' or c == '/' or c == '^' or c == '!' then ttype = "op"
       else ttype = "unknown" end
       table.insert(tokens, {type=ttype, value=c})
       print(string.format("Token: [%s] %s", ttype, c))
       i = i + clen
     else
-      error(errors.invalid("tokenize", "unknown character: " .. c))
+      error(_G.errors.get("parse(invalid_character)") or errors.invalid("tokenize", "unknown character: " .. c))
     end
   end
 
@@ -206,7 +237,7 @@ function parser.tokenize(expr)
   while j <= #tokens do
     local t1, t2 = tokens[j-1], tokens[j]
     if (t1.type == 'number' or t1.type == ')' ) and
-       (t2.type == 'ident' or t2.type == '(' or t2.type == '[') then
+       (t2.type == 'ident' or t2.type == '(' or t2.type == '[' or t2.type == 'integral_symbol') then -- Added integral_symbol
       table.insert(tokens, j, {type="op", value="*"})
       j = j + 1
     end
@@ -227,8 +258,9 @@ end
 -- Tensor parsing: supports arbitrary rank tensors (nested lists of expressions).
 local function parse_tensor(tokens, idx)
   -- Expect '[' to start tensor.
-  assert(tokens[idx] and tokens[idx].type == '[',
-         errors.invalid("parse_tensor", "expected '[' to start tensor (did you mean to type something else?)"))
+  if not (tokens[idx] and tokens[idx].type == '[') then
+    error(_G.errors.get("parse(matrix_syntax)") or errors.invalid("parse_tensor", "expected '[' to start tensor"))
+  end
 
   local function parse_elements(i)
     local elements = {}
@@ -258,7 +290,7 @@ local function parse_tensor(tokens, idx)
         break
       end
     end
-    error(errors.invalid("parse_tensor", "expected ',' or ']' in tensor definition"))
+    error(_G.errors.get("parse(ragged_matrix)") or errors.invalid("parse_tensor", "expected ',' or ']' in tensor definition"))
   end
 
   local i = idx + 1
@@ -274,28 +306,60 @@ end
 -- Also wraps things in factorials if someone thought 'x!' was a good idea. Because, why not.
 local function make_var(x) return {type="variable", name=x} end -- Because variables need love too.
 
--- Integral parsing: parses ∫(expression, variable)
+-- Integral parsing: parses ∫(expression, variable) or ∫(expression, variable, lower_bound, upper_bound)
 local function parse_integral(tokens, idx)
-  -- ∫(expression, variable) format
   local tok = tokens[idx]
-  assert(tok and tok.type == "integral", "expected ∫ symbol")
+  if not (tok and tok.type == "integral_symbol") then
+    _G.errors.throw("parse(integral)") -- Consistent error throw
+  end
 
-  assert(tokens[idx + 1] and tokens[idx + 1].type == "(", "expected '(' after ∫")
+  if not (tokens[idx + 1] and tokens[idx + 1].type == "(") then
+    _G.errors.throw("parse(function_missing_args)", "integral") -- Consistent error throw
+  end
 
-  local expr, i = parser.parseExpr(tokens, idx + 2)
-  assert(tokens[i] and tokens[i].type == ",", "expected ',' after integral expression")
+  local integrand_expr, i = parser.parseExpr(tokens, idx + 2)
+  if not (tokens[i] and tokens[i].type == ",") then
+    _G.errors.throw("parse(integral)", "missing_comma_after_integrand") -- Consistent error throw
+  end
 
   local var_token = tokens[i + 1]
-  assert(var_token and var_token.type == "ident", "expected variable name after ',' in integral")
+  if not (var_token and var_token.type == "ident") then
+    _G.errors.throw("parse(invalid_variable_name)", "integral_variable") -- Consistent error throw
+  end
 
-  assert(tokens[i + 2] and tokens[i + 2].type == ")", "expected ')' to close integral")
+  i = i + 2 -- Move past var_token and comma (now at either ')' or ',')
 
-  return {
-    type = "func",
-    name = "int",
-    args = { expr, { type = "variable", name = var_token.value } }
-  }, i + 3
+  local integral_node = {
+    type = "integral",
+    integrand = integrand_expr,
+    respect_to = { type = "variable", name = var_token.value }
+  }
+
+  -- Check for definite integral bounds
+  if tokens[i] and tokens[i].type == "," then
+    local lower_bound, ni1 = parser.parseExpr(tokens, i + 1)
+    if not (tokens[ni1] and tokens[ni1].type == ",") then
+      _G.errors.throw("parse(integral_limits)", "missing_comma_after_lower_bound") -- Consistent error throw
+    end
+    local upper_bound, ni2 = parser.parseExpr(tokens, ni1 + 1)
+    if not (tokens[ni2] and tokens[ni2].type == ")") then
+      _G.errors.throw("parse(unmatched_paren)", "integral_bounds") -- Consistent error throw
+    end
+
+    integral_node.lower_bound = lower_bound
+    integral_node.upper_bound = upper_bound
+    i = ni2 + 1 -- Move past upper_bound and closing parenthesis
+  else
+    -- For indefinite integral, expect closing parenthesis
+    if not (tokens[i] and tokens[i].type == ")") then
+      _G.errors.throw("parse(unmatched_paren)", "integral") -- Consistent error throw
+    end
+    i = i + 1
+  end
+
+  return integral_node, i
 end
+
 
 local function parse_primary(tokens, idx)
   local tok = tokens[idx]
@@ -318,7 +382,7 @@ local function parse_primary(tokens, idx)
     return {type="derivative", respect_to="x", expr=expr}, ni
   end
 
-  if tok.type == "integral" then
+  if tok.type == "integral_symbol" then -- Use the new token type
     return parse_integral(tokens, idx)
   elseif tok.type == "number" then
     return wrap_factorial({type="number", value=tok.value}, idx+1)
@@ -328,13 +392,21 @@ local function parse_primary(tokens, idx)
       if tok.value == "series" then
         local i = idx + 2
         local func_expr, ni = parser.parseExpr(tokens, i)
-        if not (tokens[ni] and tokens[ni].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
+        if not (tokens[ni] and tokens[ni].type == ",") then
+          _G.errors.throw("parse(series)", "missing_comma_after_func")
+        end
         local var_node, ni2 = parser.parseExpr(tokens, ni + 1)
-        if not (tokens[ni2] and tokens[ni2].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
+        if not (tokens[ni2] and tokens[ni2].type == ",") then
+          _G.errors.throw("parse(series)", "missing_comma_after_var")
+        end
         local center_node, ni3 = parser.parseExpr(tokens, ni2 + 1)
-        if not (tokens[ni3] and tokens[ni3].type == ",") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
+        if not (tokens[ni3] and tokens[ni3].type == ",") then
+          _G.errors.throw("parse(series)", "missing_comma_after_center")
+        end
         local order_node, ni4 = parser.parseExpr(tokens, ni3 + 1)
-        if not (tokens[ni4] and tokens[ni4].type == ")") then error("Error: Failed to parse the series expression. Did you use correct syntax?") end
+        if not (tokens[ni4] and tokens[ni4].type == ")") then
+          _G.errors.throw("parse(function_too_many_args)", "series_missing_close_paren")
+        end
         return {
           type = "series",
           func = func_expr,
@@ -343,7 +415,114 @@ local function parse_primary(tokens, idx)
           order = order_node
         }, ni4 + 1
       end
-      -- Function call detected (non-series)
+      
+      -- Debug version of the limit parsing logic
+      if tok.value == "lim" then
+        -- Parse lim(expr, var, to, direction) format
+        print("DEBUG: Starting lim parse")
+        
+        if not (tokens[idx + 1] and tokens[idx + 1].type == "(") then
+          _G.errors.throw("parse(limit_syntax)", "expected '(' after lim")
+        end
+        
+        local i = idx + 2
+        print("DEBUG: About to parse expression starting at token " .. i)
+        if tokens[i] then
+          print("DEBUG: Token at " .. i .. " is: " .. tokens[i].type .. " = " .. tostring(tokens[i].value))
+        end
+        
+        -- Parse the expression to take the limit of
+        local expr, ni = parser.parseExpr(tokens, i)
+        print("DEBUG: Parsed expression, now at token " .. ni)
+        if tokens[ni] then
+          print("DEBUG: Token at " .. ni .. " is: " .. tokens[ni].type .. " = " .. tostring(tokens[ni].value))
+        else
+          print("DEBUG: No token at " .. ni .. " (end of tokens?)")
+        end
+        
+        if not (tokens[ni] and tokens[ni].type == ",") then
+          _G.errors.throw("parse(limit_syntax)", "expected ',' after limit expression but got " .. 
+               (tokens[ni] and tokens[ni].type or "nil"))
+        end
+        
+        -- Parse the variable
+        local var_token = tokens[ni + 1]
+        print("DEBUG: Variable token: " .. (var_token and var_token.type or "nil") .. " = " .. 
+              (var_token and tostring(var_token.value) or "nil"))
+        if not (var_token and var_token.type == "ident") then
+          _G.errors.throw("parse(function_missing_args)", "limit_expected_variable")
+        end
+        
+        if not (tokens[ni + 2] and tokens[ni + 2].type == ",") then
+          _G.errors.throw("parse(limit_syntax)", "expected ',' after variable")
+        end
+        
+        -- Parse the value we're approaching
+        local to_val, ni3 = parser.parseExpr(tokens, ni + 3)
+        print("DEBUG: Parsed limit value, now at token " .. ni3)
+        
+        if not (tokens[ni3] and tokens[ni3].type == ")") then
+          _G.errors.throw("parse(unmatched_paren)", "limit_missing_close_paren")
+        end
+        
+        -- Actually compute the damn limit like we're supposed to
+        local expr_str = ast_to_string(expr)
+        local to_str = ast_to_string(to_val)
+        
+        print("DEBUG: expr_str = '" .. expr_str .. "'")
+        print("DEBUG: var = '" .. var_token.value .. "'")
+        print("DEBUG: to_str = '" .. to_str .. "'")
+        
+        -- Call the beautiful limit function
+        local ok, result = pcall(_G.lim, expr_str, var_token.value, to_str, direction)
+        if not ok then
+          print("DEBUG: _G.lim failed with: " .. tostring(result))
+          _G.errors.throw("eval(undefined_at_point)", "limit evaluation failed: " .. tostring(result))
+        end
+        
+        print("DEBUG: _G.lim returned: " .. tostring(result))
+        return result, ni3 + 1
+      end
+      
+      -- NEW: Handle binomial_expand function call
+      if tok.value == "binomial_expand" then
+        local i = idx + 2
+        local expr_to_expand, ni = parser.parseExpr(tokens, i) -- Parse the expression argument
+        if not (tokens[ni] and tokens[ni].type == ")") then
+          _G.errors.throw("parse(function_missing_args)", "binomial_expand_missing_close_paren")
+        end
+        -- Call the actual _G.binomial_expand function from fraction.lua
+        -- Note: _G.binomial_expand expects an AST node for base and exp, not a string or the full AST of (base^exp).
+        -- This means we need to ensure expr_to_expand is of type 'pow'.
+        if expr_to_expand.type ~= "pow" then
+            _G.errors.throw("parse(function_too_many_args)", "binomial_expand expects a power expression (e.g., (x+y)^n)")
+        end
+        -- Call _G.binomial_expand, which requires 'base' and 'exp' nodes
+        local expanded_ast = _G.binomial_expand(expr_to_expand.base, expr_to_expand.exp)
+        
+        -- If expansion results in a new AST, use it. Otherwise, keep the original representation or error.
+        if expanded_ast and expanded_ast.type ~= "binomial_expand_failed" then
+            return expanded_ast, ni + 1
+        else
+            -- If binomial_expand failed, you can either return the unexpanded form
+            -- or return a specific error node for later processing/display.
+            -- For simplicity, we'll return the original power node for now,
+            -- allowing further processing if desired (e.g., by _G.simplify.simplify_step).
+            return expr_to_expand, ni + 1
+        end
+      -- NEW: Handle fraction_simplify function call
+      elseif tok.value == "fraction_simplify" then
+        local i = idx + 2
+        local expr_to_simplify, ni = parser.parseExpr(tokens, i) -- Parse the expression argument
+        if not (tokens[ni] and tokens[ni].type == ")") then
+          _G.errors.throw("parse(function_missing_args)", "fraction_simplify_missing_close_paren")
+        end
+        -- Call the actual _G.simplify_fraction function from fraction.lua
+        -- Note: _G.simplify_fraction expects an AST node, not a string
+        local simplified_ast = _G.simplify_fraction(expr_to_simplify)
+        return simplified_ast, ni + 1
+      end
+      
       local args = {}
       local i = idx + 2
       if tokens[i] and tokens[i].type ~= ")" then
@@ -356,7 +535,9 @@ local function parse_primary(tokens, idx)
           table.insert(args, next_arg)
         end
       end
-      assert(tokens[i] and tokens[i].type == ")", "expected ')' after function arguments")
+      if not (tokens[i] and tokens[i].type == ")") then
+        _G.errors.throw("parse(unmatched_paren)", "function_call_missing_close_paren")
+      end
       return wrap_factorial({ type="func", name=tok.value, args=args }, i + 1)
     else
       local physics_constants = _G.physics and _G.physics.constants or nil
@@ -395,7 +576,9 @@ local function parse_primary(tokens, idx)
       end
     end
     local node, ni = parser.parseExpr(tokens, idx+1)
-    assert(tokens[ni] and tokens[ni].type == ')', "expected ')'")
+    if not (tokens[ni] and tokens[ni].type == ')') then
+      _G.errors.throw("parse(unmatched_paren)", "parenthesized_expression")
+    end
     return wrap_factorial(node, ni+1)
   elseif tok.type == '[' then
     local tensor, ni = parse_tensor(tokens, idx)
@@ -406,7 +589,7 @@ local function parse_primary(tokens, idx)
     local expr, ni = parser.parseExpr(tokens, idx+1)
     return wrap_factorial({type="neg", value=expr}, ni)
   else
-    error("unexpected token at parse_primary: " .. (tok.type or '?'))
+    _G.errors.throw("parse(what_is_that)", tok.type or '?')
   end
 end
 
@@ -500,7 +683,7 @@ end
 function parser.buildAST(tokens)
   local ast, idx = parser.parseExpr(tokens, 1)
   if idx <= #tokens then
-    error(errors.invalid("parse", "unexpected " .. tostring(tokens[idx].type or "?") .. " (you left something behind)"))
+    _G.errors.throw("parse(unexpected_eof)", tokens[idx].type or '?')
   end
   return ast
 end
@@ -533,20 +716,49 @@ function parser.parse(expr)
   local ok, ast_or_err = pcall(parser.buildAST, tokens)
   if not ok then
     local err_msg = tostring(ast_or_err)
-    if err_msg:match("parse%(series%)") then
-      error(errors.invalid("parse(series)", err_msg))
-    elseif err_msg:match("parse%(integral%)") then
-      error(errors.invalid("parse(integral)", err_msg))
-    elseif err_msg:match("parse%(derivative%)") then
-      error(errors.invalid("parse(derivative)", err_msg))
-    elseif err_msg:match("parse%(matrix%)") then
-      error(errors.invalid("parse(matrix)", err_msg))
+    if err_msg:find("parse%(series%)") then
+      _G.errors.throw("parse(series)")
+    elseif err_msg:find("parse%(integral%)") then -- Catches errors from parse_integral
+      _G.errors.throw("parse(integral)")
+    elseif err_msg:find("d/dx%(nothing%)") then -- Catches errors from derivative parse
+      _G.errors.throw("d/dx(nothing)")
+    elseif err_msg:find("parse%(matrix_syntax%)") then
+      _G.errors.throw("parse(matrix_syntax)")
+    elseif err_msg:find("parse%(limit_syntax%)") then
+      _G.errors.throw("parse(limit_syntax)")
+    elseif err_msg:find("parse%(function_missing_args%)") then
+        local func = err_msg:match("function_missing_args%) Error: Function call missing arguments%. Did you forget to feed the function%?%s*(.+)") -- Attempt to extract func name
+        _G.errors.throw("parse(function_missing_args)", func or "unknown_func")
+    elseif err_msg:find("parse%(function_too_many_args%)") then
+        _G.errors.throw("parse(function_too_many_args)")
+    elseif err_msg:find("parse%(unmatched_paren%)") then
+        _G.errors.throw("parse(unmatched_paren)")
+    elseif err_msg:find("parse%(invalid_variable_name%)") then
+        local hint = err_msg:match("invalid_variable_name%) Error: Invalid variable name%.%s*(.+)")
+        _G.errors.throw("parse(invalid_variable_name)", hint or "generic")
+    elseif err_msg:find("parse%(unexpected_token%)") then
+        local token_type = err_msg:match("unexpected_token%) Error: Unexpected token%. It's like you're speaking in tongues, I can't parse that garbage%.%s*(.+)")
+        _G.errors.throw("parse(unexpected_token)", token_type or "generic")
+    elseif err_msg:find("parse%(invalid_character%)") then
+        _G.errors.throw("parse(invalid_character)")
+    elseif err_msg:find("parse%(malformed_power%)") then
+        _G.errors.throw("parse(malformed_power)")
+    elseif err_msg:find("parse%(ragged_matrix%)") then
+        _G.errors.throw("parse(ragged_matrix)")
+    elseif err_msg:find("parse%(what_is_that%)") then
+        _G.errors.throw("parse(what_is_that)")
+    elseif err_msg:find("parse%(syntax%)") then
+      _G.errors.throw("parse(syntax)") -- Generic parse error if specific ones not found
     else
-      error(errors.invalid("parse", err_msg))
+      -- Fallback for completely unmapped pcall errors
+      _G.errors.throw("parse(gibberish)", err_msg)
     end
   end
+  
+  local ast_node = ast_or_err -- If pcall was successful, ast_or_err is the AST
+  
   -- Automatically simplify after parsing if possible
-  local simplified = rawget(_G, "simplify") and _G.simplify.simplify_step and _G.simplify.simplify_step(ast_or_err) or ast_or_err
+  local simplified = rawget(_G, "simplify") and _G.simplify.simplify_step and _G.simplify.simplify_step(ast_node) or ast_node
 
   -- Evaluate factorial and integral nodes if possible (replace factorial(func(number)) with number node, and int(number, var) with number node)
   local function evaluate_nodes(node)
@@ -562,24 +774,30 @@ function parser.parse(expr)
           return node
       end
 
-      -- Evaluate integral if expr is numeric
-      if node.type == "func" and node.name == "int" and node.args and #node.args == 2 then
-          local expr = evaluate_nodes(node.args[1])
-          local var = evaluate_nodes(node.args[2])
-          if expr.type == "number" and var.type == "variable" and _G.evaluateIntegral then
-              return { type = "number", value = _G.evaluateIntegral(expr.value, var.name) }
-          end
-          node.args[1] = expr
-          node.args[2] = var
+      -- Integral nodes are now handled by the integral function directly, not here
+      -- This section might need adjustment if you want *numeric* integrals to resolve here.
+      -- For symbolic, you want the 'integral' AST node to persist.
+      if node.type == "integral" then
+          -- If the integral contains only numeric parts and can be evaluated fully to a number,
+          -- you might call _G.integrate.eval with bounds here.
+          -- Otherwise, let it remain an AST node to be handled by the full integration logic.
           return node
       end
 
-      -- Recurse
+      -- Recurse for common node types with children
       if node.args then
           for i, arg in ipairs(node.args) do
               node.args[i] = evaluate_nodes(arg)
           end
-      elseif node.value then
+      elseif node.left then
+          node.left = evaluate_nodes(node.left)
+          if node.right then node.right = evaluate_nodes(node.right) end
+      elseif node.base then
+          node.base = evaluate_nodes(node.base)
+          if node.exp then node.exp = evaluate_nodes(node.exp) end
+      elseif node.arg then
+          node.arg = evaluate_nodes(node.arg)
+      elseif node.value and type(node.value) == "table" then
           node.value = evaluate_nodes(node.value)
       end
       return node

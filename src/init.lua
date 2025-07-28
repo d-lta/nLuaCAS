@@ -2,7 +2,11 @@ platform.apilevel = "2.4"
 
 local var = rawget(_G, "var") or nil
 _G.darkMode = (var and var.recall and var.recall("dark_mode") == 1) or false
-
+-- Put this RIGHT AT THE TOP, before anything else
+local original_error = error
+function error(msg, level)
+    original_error(tostring(msg), 0)
+end
 -- Default fallback; true recall happens after storage is ready
 _G.current_constant_category = nil
 
