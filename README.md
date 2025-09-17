@@ -113,6 +113,6 @@ String → Parser → AST → Simplifier → AST → Pretty Printer → String
 
 ## Credits
 
-Engine and AST system by DeltaDev. UI framework adapted from SuperSpire (S²) by Xavier Andréani. Build system concept from Adriweb. Menu concepts from khicas project.
+Engine and AST system by d-lta. UI framework adapted from SuperSpire (S²) by Xavier Andréani. Build system concept from Adriweb. Menu concepts from khicas project.
 
 Licensed under MIT. No TI proprietary code used.
